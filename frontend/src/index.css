@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-bg text-gray-200 antialiased;
+    font-family:
+      'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-bg-panel border border-bg-subtle rounded-lg p-4 shadow-lg;
+  }
+  .card-header {
+    @apply text-sm font-semibold uppercase tracking-wide text-gray-400 mb-3;
+  }
+  .pill {
+    @apply inline-block px-2 py-0.5 rounded text-xs font-medium;
+  }
+  .pill-green {
+    @apply bg-accent-green/10 text-accent-green;
+  }
+  .pill-red {
+    @apply bg-accent-red/10 text-accent-red;
+  }
+  .pill-blue {
+    @apply bg-accent-blue/10 text-accent-blue;
+  }
+  .pill-yellow {
+    @apply bg-accent-yellow/10 text-accent-yellow;
+  }
+  .btn {
+    @apply px-3 py-1.5 rounded text-sm font-medium transition-colors;
+  }
+  .btn-primary {
+    @apply bg-accent-blue text-white hover:bg-blue-600;
+  }
+  .btn-ghost {
+    @apply bg-bg-subtle text-gray-300 hover:bg-gray-700;
+  }
+}
+
+/* Scrollbar custom */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0a0e1a;
+}
+::-webkit-scrollbar-thumb {
+  background: #1a2236;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #2a3556;
+}
