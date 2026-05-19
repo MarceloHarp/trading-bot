@@ -1,11 +1,63 @@
+# Dependencias
 node_modules/
+package-lock.json
+yarn.lock
+
+# Build
 dist/
 build/
+.next/
+out/
+
+# Base de datos
+*.db
+dev.db
+*.sqlite
+
+# Env variables (NUNCA subir)
 .env
 .env.local
-*.log
-.DS_Store
-coverage/
-.idea/
+.env.*.local
+.env.production.local
+
+# IDE
 .vscode/
-*.tsbuildinfo
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Cache
+.cache/
+.eslintcache
+.parcel-cache
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Temporal
+tmp/
+temp/
+*.tmp
+
+# Vite
+.vite/
+
+# Prisma
+prisma/dev.db*
+prisma/.env*
+
+# Archivos generados automáticamente
+dist/
+.turbo/
+.next
+out/

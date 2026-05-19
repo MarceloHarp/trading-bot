@@ -1,0 +1,53 @@
+{
+  "name": "trading-bot",
+  "version": "2.0.0",
+  "description": "🤖 Automated Trading Bot with 4 strategies, AI validation, and real-time dashboard",
+  "license": "MIT",
+  "author": "elkun <negro.y.gti@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/elkun/trading-bot.git"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build": "npm run build:backend && npm run build:frontend",
+    "build:backend": "cd backend && npm run build",
+    "build:frontend": "cd frontend && npm run build",
+    "start": "npm run start:backend",
+    "start:backend": "cd backend && npm start",
+    "setup": "npm install && cd backend && npm install && npx prisma migrate dev",
+    "db:reset": "cd backend && npx prisma migrate reset --force && npx prisma generate",
+    "db:studio": "cd backend && npx prisma studio",
+    "lint": "npm run lint:backend && npm run lint:frontend",
+    "lint:backend": "cd backend && npm run lint",
+    "lint:frontend": "cd frontend && npm run lint",
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:backend": "cd backend && npm test",
+    "test:frontend": "cd frontend && npm test",
+    "clean": "rm -rf node_modules backend/node_modules frontend/node_modules backend/dist frontend/dist backend/.next",
+    "docs": "echo 'Ver README.md, CONTRIBUTING.md, ESTADO_PROYECTO.md'",
+    "version": "2.0.0 — Post-optimizaciones (1h+4h, SL dinámico, trailing stop, filtro SMA200)"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "keywords": [
+    "trading",
+    "bot",
+    "cryptocurrency",
+    "binance",
+    "automated",
+    "typescript",
+    "react",
+    "nodejs"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
