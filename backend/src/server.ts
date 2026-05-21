@@ -5,9 +5,11 @@ import { Server as SocketIOServer } from 'socket.io';
 import { StrategyEngine } from './core/StrategyEngine';
 import { prisma } from './db/prisma';
 import { BinanceAdapter } from './exchanges/BinanceAdapter';
+import { BinanceFuturesAdapter } from './exchanges/BinanceFuturesAdapter';
 import { buildRoutes } from './routes/api';
 import { backtestRouter } from './routes/backtest';
 import { buildIndicatorsRouter } from './routes/indicators';
+import { WeeklyBacktestService } from './integrations/WeeklyBacktestService';
 import { config } from './utils/config';
 import { logger } from './utils/logger';
 
@@ -23,7 +25,10 @@ async function main() {
     cors: { origin: config.corsOrigin, methods: ['GET', 'POST'] },
   });
 
-  const exchange = new BinanceAdapter();
+  const exchange = config.tradingMode === 'futures'
+    ? new BinanceFuturesAdapter()
+    : new BinanceAdapter();
+  logger.info(`Modo trading: ${config.tradingMode.toUpperCase()}`);
 
   app.use(cors({ origin: config.corsOrigin }));
   app.use(express.json({ limit: '10mb' }));
@@ -36,8 +41,23 @@ async function main() {
   const engine = new StrategyEngine(exchange, io);
   engine.start();
 
-  app.use('/api', buildRoutes(exchange, engine));
+  const weeklyBacktest = new WeeklyBacktestService();
+  weeklyBacktest.start();
+
+  app.use('/api', buildRoutes(exchange));
   app.use('/api/backtest', backtestRouter);
+
+  // Trigger manual del backtest semanal — espera resultado y reporta errores
+  app.post('/api/backtest/run-weekly', async (_req, res: any) => {
+    try {
+      await weeklyBacktest.runReport();
+      res.json({ ok: true, message: 'Backtest semanal completado. Revisá el email.' });
+    } catch (err) {
+      const msg = (err as Error).message;
+      logger.error('Weekly backtest error: ' + msg);
+      res.status(500).json({ ok: false, error: msg });
+    }
+  });
   app.use('/api', buildIndicatorsRouter((symbol, interval, limit) => exchange.getCandles(symbol, interval, limit)));
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -49,6 +69,7 @@ async function main() {
   const shutdown = async () => {
     logger.info('Shutdown iniciado...');
     engine.stop();
+    weeklyBacktest.stop();
     exchange.closeAll();
     await prisma.$disconnect();
     httpServer.close(() => { logger.info('HTTP cerrado'); process.exit(0); });

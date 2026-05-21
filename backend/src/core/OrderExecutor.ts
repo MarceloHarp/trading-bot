@@ -1,12 +1,12 @@
 import { prisma } from '../db/prisma';
-import type { BinanceAdapter } from '../exchanges/BinanceAdapter';
+import type { IExchangeAdapter } from '../exchanges/IExchangeAdapter';
 import { alertTradeClosed, alertTradeOpened } from '../integrations/AlertService';
 import type { Signal } from '../types';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
 
 export class OrderExecutor {
-  constructor(private readonly exchange: BinanceAdapter) {}
+  constructor(private readonly exchange: IExchangeAdapter) {}
 
   async executeSignal(signal: Signal & { signalId: string }) {
     const quoteAmount = config.bot.riskPerTradeUsdt;
@@ -77,6 +77,39 @@ export class OrderExecutor {
 
       let close: 'target' | 'stop' | null = null;
       
+      // Partial Take Profit: cerrar 50% en TP1 (5%), dejar 50% en TP2 (10%)
+      const gainPctPartial = t.direction === 'BUY'
+        ? (price - t.entryPrice) / t.entryPrice * 100
+        : (t.entryPrice - price) / t.entryPrice * 100;
+      
+      // Si ganó 5% y aún no hizo partial close, cerrar la mitad
+      if (gainPctPartial >= 5 && !(t as any).partialClosed) {
+        try {
+          const halfQty = t.quantity / 2;
+          if (halfQty > 0) {
+            logger.info(`[PARTIAL_TP] ${t.symbol} +5% — cerrando 50% (${halfQty})`);
+            // Marcar como partial closed en meta
+            await (prisma as any).trade.update({
+              where: { id: t.id },
+              data: { 
+                meta: JSON.stringify({ ...(t as any).meta, partialClosed: true, partialClosePrice: price }),
+                targetPrice: t.entryPrice * (t.direction === 'BUY' ? 1.10 : 0.90), // TP2 al 10%
+              }
+            });
+            // Alerta de partial TP
+            void alertTradeClosed({
+              symbol: t.symbol,
+              direction: t.direction,
+              entryPrice: t.entryPrice,
+              exitPrice: price,
+              pnl: halfQty * Math.abs(price - t.entryPrice),
+              pnlPercent: gainPctPartial,
+              closedReason: 'partial_tp',
+            });
+          }
+        } catch {}
+      }
+
       // Trailing stop: si el trade gana >3%, mover el SL al breakeven
       const gainPct = t.direction === 'BUY'
         ? (price - t.entryPrice) / t.entryPrice * 100
@@ -112,13 +145,15 @@ export class OrderExecutor {
 
       // Ejecutar orden de cierre en Binance si autoExecute esta activo
       let exitPrice = price;
-      if (config.bot.autoExecute) {
+      if (config.bot.autoExecute && !global.__botOffline) {
         try {
           // Para cerrar un BUY mandamos SELL, para cerrar un SELL mandamos BUY
           const closeSide = t.direction === 'BUY' ? 'SELL' : 'BUY';
-          const res = await this.exchange.placeMarketOrder(t.symbol, closeSide, t.quantity);
+          // En futuros: reduceOnly=true para no abrir posición opuesta accidentalmente
+          const isFutures = config.tradingMode === 'futures';
+          const res = await this.exchange.placeMarketOrder(t.symbol, closeSide, t.quantity, isFutures);
           exitPrice = res.price || price;
-          logger.info('Orden cierre ejecutada: ' + closeSide + ' ' + closeQty + ' ' + t.symbol + ' @ ' + exitPrice + ' (' + close + ')');
+          logger.info('Orden cierre ejecutada: ' + closeSide + ' ' + t.quantity + ' ' + t.symbol + ' @ ' + exitPrice + ' (' + close + ')');
         } catch (err) {
           logger.error('Error orden cierre ' + t.symbol + ': ' + (err as Error).message);
           // Igual cerramos en DB con el precio actual

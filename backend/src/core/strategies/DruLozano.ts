@@ -1,239 +1,158 @@
 import type { Strategy } from './Strategy';
 import type { Candle, Signal } from '../../types';
-import { sma, ema, atr, findSwings } from '../indicators';
+import { sma, atr } from '../indicators';
 
 /**
- * Estrategia Dru Lozano — "Atrévete"
- * -----------------------------------
- * Basada en el informe institucional de Carlos "Dru" Lozano.
+ * Estrategia Dru Lozano — MA Stack + Pullback a MA50
+ * ---------------------------------------------------
+ * Lógica corregida: en vez de sweep counter-trend, opera CON la tendencia.
  *
- * Pilares implementados:
- * 1. MA Stack: MA50 (amarilla), MA100 (azul), MA150 (purple), MA200 (roja)
- *    - Sesgo BULLISH: precio > MA50 > MA100 > MA150 > MA200 (stack alcista)
- *    - Sesgo BEARISH: precio < MA50 < MA100 < MA150 < MA200
- * 2. Order Blocks: vela con cuerpo fuerte seguida de movimiento > 1.5x ATR
- * 3. Fair Value Gaps (FVG): gaps de precio donde high[i-1] < low[i+1] o inverso
- * 4. Liquidity Sweeps: el precio rompe un swing high/low y revierte
- * 5. Confirmacion: requiere que el precio este dentro de un OB o FVG + sweep previo
+ * 1. MA Stack: precio > MA50 > MA100 > MA150 > MA200 (bull) o inverso (bear)
+ * 2. Pullback: el precio retrocede hasta tocar la MA50 (soporte/resistencia dinámico)
+ * 3. Bounce: vela de confirmación con cuerpo >50% que cierra de vuelta del lado correcto
+ * 4. OB/FVG: confluencia adicional que sube la confianza (no obligatorio)
  *
- * Timeframe sugerido: 4h (contextualización) con entrada en 1h
- * R:R mínimo: 2:1
+ * R:R mínimo: 3:1
  */
 export class DruLozanoStrategy implements Strategy {
   readonly name = 'DruLozano';
 
-  private readonly ma50p   = 50;
-  private readonly ma100p  = 100;
-  private readonly ma150p  = 150;
-  private readonly ma200p  = 200;
-  private readonly atrP    = 14;
-  private readonly minRR   = 3;
-  private readonly obLookback = 30; // velas para buscar order blocks
+  private readonly ma50p    = 50;
+  private readonly ma100p   = 100;
+  private readonly ma150p   = 150;
+  private readonly ma200p   = 200;
+  private readonly atrP     = 14;
+  private readonly minRR    = 3;
+  private readonly obLookback = 30;
 
   evaluate(symbol: string, timeframe: string, candles: Candle[]): Signal | null {
     if (candles.length < this.ma200p + 10) return null;
 
-    const closes  = candles.map(c => c.close);
+    const closes   = candles.map(c => c.close);
     const ma50arr  = sma(closes, this.ma50p);
     const ma100arr = sma(closes, this.ma100p);
     const ma150arr = sma(closes, this.ma150p);
     const ma200arr = sma(closes, this.ma200p);
     const atrArr   = atr(candles, this.atrP);
 
-    const i = candles.length - 1;
-    const price  = closes[i];
-    const ma50   = ma50arr[i];
-    const ma100  = ma100arr[i];
-    const ma150  = ma150arr[i];
-    const ma200  = ma200arr[i];
+    const i       = candles.length - 1;
+    const price   = closes[i];
+    const ma50    = ma50arr[i];
+    const ma100   = ma100arr[i];
+    const ma150   = ma150arr[i];
+    const ma200   = ma200arr[i];
     const lastAtr = atrArr[i];
 
     if ([ma50, ma100, ma150, ma200, lastAtr].some(v => Number.isNaN(v))) return null;
     if (lastAtr === 0) return null;
 
-    // --- Sesgo direccional por MA Stack ---
+    // MA Stack: tendencia fuerte alineada
     const bullStack = price > ma50 && ma50 > ma100 && ma100 > ma150 && ma150 > ma200;
     const bearStack = price < ma50 && ma50 < ma100 && ma100 < ma150 && ma150 < ma200;
     if (!bullStack && !bearStack) return null;
 
-    const swings = findSwings(candles, 5);
+    const last = candles[i];
+    const candleRange = last.high - last.low;
+    const bodyRatio = candleRange > 0 ? Math.abs(last.close - last.open) / candleRange : 0;
 
-    // --- Detectar Liquidity Sweep reciente ---
-    const sweep = this.detectLiquiditySweep(candles, swings, bullStack);
-    if (!sweep) return null;
-
-    // --- Detectar Order Block o Fair Value Gap ---
-    const ob  = this.findOrderBlock(candles, bullStack, lastAtr);
-    const fvg = this.findFairValueGap(candles, bullStack);
-
-    // Triple confirmación: sweep siempre requerido, al menos OB o FVG
-    const hasSetup = ob !== null || fvg !== null;
-    const tripleConfirm = hasSetup; // base, se puede exigir ambos con: ob !== null && fvg !== null
-    if (!tripleConfirm) return null;
-
-    // --- Confirmar reversión en última vela ---
-    const lastCandle = candles[candles.length - 1];
-    const candleBody = Math.abs(lastCandle.close - lastCandle.open);
-    const candleRange = lastCandle.high - lastCandle.low;
-    const bodyRatio = candleRange > 0 ? candleBody / candleRange : 0;
-    // La vela de entrada debe tener cuerpo fuerte (>50% del rango)
-    const confirmCandle = bodyRatio > 0.5;
-    if (!confirmCandle) return null;
-
-    // --- Calcular entrada, SL y TP ---
     if (bullStack) {
+      // Pullback: alguna de las últimas 3 velas tocó o perforó la MA50
+      const pulledBack = [1, 2, 3].some(offset => {
+        const j = i - offset;
+        return j >= 0 && candles[j].low <= ma50arr[j] + lastAtr * 0.3;
+      });
+      if (!pulledBack) return null;
+
+      // Bounce: vela actual cierra por encima de MA50 con cuerpo alcista fuerte
+      const bounced = last.close > ma50 && last.close > last.open && bodyRatio > 0.5;
+      if (!bounced) return null;
+
+      // Confluencia OB/FVG (opcional — sube confianza)
+      const ob  = this.findOrderBlock(candles, true, lastAtr);
+      const fvg = this.findFairValueGap(candles, true);
+
       const entryPrice = price;
-      // SL debajo del mínimo del sweep o del OB, protegido por ATR
-      const swingLow = Math.min(...swings.filter(s => s.type === 'low').slice(-5).map(s => s.price));
-      const stopLoss = Math.min(swingLow, sweep.extremePrice) - lastAtr * 0.3;
+      // SL debajo del mínimo de las últimas 3 velas (el pullback completo)
+      const recentMin = Math.min(...[0, 1, 2, 3].map(o => candles[i - o]?.low ?? Infinity));
+      const stopLoss  = recentMin - lastAtr * 0.3;
       const risk = entryPrice - stopLoss;
       if (risk <= 0) return null;
-      const rawTP = entryPrice + risk * this.minRR;
-      const targetPrice = Math.max(rawTP, entryPrice * 1.05);
+      const targetPrice = entryPrice + risk * this.minRR;
 
-      const setupType = ob ? 'OrderBlock' : 'FVG';
-      const confidence = ob && fvg ? 0.85 : 0.75;
+      const confidence = ob && fvg ? 0.85 : ob || fvg ? 0.75 : 0.65;
+      const extras = ob ? '+OB' : fvg ? '+FVG' : '';
 
       return {
         symbol, timeframe,
         strategy: 'DruLozano',
         direction: 'BUY',
         entryPrice, stopLoss, targetPrice, confidence,
-        reason: `MA Stack alcista + Liquidity Sweep + ${setupType} | MA50:${ma50.toFixed(0)} MA200:${ma200.toFixed(0)}`,
-        meta: { ma50, ma100, ma150, ma200, sweep: sweep.extremePrice, setupType, atr: lastAtr, ob: ob?.price ?? null, fvg: fvg ?? null },
+        reason: `MA Stack alcista + Pullback MA50${extras} | MA50:${ma50.toFixed(0)} MA200:${ma200.toFixed(0)}`,
+        meta: { ma50, ma100, ma150, ma200, atr: lastAtr, ob: ob?.price ?? null, fvg: fvg ?? null },
       };
     }
 
-    // BEARISH
+    // BEARISH: pullback al alza hasta MA50, rechazo bajista
+    const pulledBack = [1, 2, 3].some(offset => {
+      const j = i - offset;
+      return j >= 0 && candles[j].high >= ma50arr[j] - lastAtr * 0.3;
+    });
+    if (!pulledBack) return null;
+
+    const bounced = last.close < ma50 && last.close < last.open && bodyRatio > 0.5;
+    if (!bounced) return null;
+
+    const ob  = this.findOrderBlock(candles, false, lastAtr);
+    const fvg = this.findFairValueGap(candles, false);
+
     const entryPrice = price;
-    const swingHigh = Math.max(...swings.filter(s => s.type === 'high').slice(-5).map(s => s.price));
-    const stopLoss = Math.max(swingHigh, sweep.extremePrice) + lastAtr * 0.3;
+    const recentMax  = Math.max(...[0, 1, 2, 3].map(o => candles[i - o]?.high ?? -Infinity));
+    const stopLoss   = recentMax + lastAtr * 0.3;
     const risk = stopLoss - entryPrice;
     if (risk <= 0) return null;
-    const rawTP2 = entryPrice - risk * this.minRR;
-    const targetPrice = Math.min(rawTP2, entryPrice * 0.95);
+    const targetPrice = entryPrice - risk * this.minRR;
 
-    const setupType = ob ? 'OrderBlock' : 'FVG';
-    const confidence = ob && fvg ? 0.85 : 0.75;
+    const confidence = ob && fvg ? 0.85 : ob || fvg ? 0.75 : 0.65;
+    const extras = ob ? '+OB' : fvg ? '+FVG' : '';
 
     return {
       symbol, timeframe,
       strategy: 'DruLozano',
       direction: 'SELL',
       entryPrice, stopLoss, targetPrice, confidence,
-      reason: `MA Stack bajista + Liquidity Sweep + ${setupType} | MA50:${ma50.toFixed(0)} MA200:${ma200.toFixed(0)}`,
-      meta: { ma50, ma100, ma150, ma200, sweep: sweep.extremePrice, setupType, atr: lastAtr, ob: ob?.price ?? null, fvg: fvg ?? null },
+      reason: `MA Stack bajista + Pullback MA50${extras} | MA50:${ma50.toFixed(0)} MA200:${ma200.toFixed(0)}`,
+      meta: { ma50, ma100, ma150, ma200, atr: lastAtr, ob: ob?.price ?? null, fvg: fvg ?? null },
     };
   }
 
-  /**
-   * Liquidity Sweep: el precio rompió un swing y revirtió en las últimas 5 velas.
-   * Bullish sweep: precio perforó un swing low y volvió por encima.
-   * Bearish sweep: precio perforó un swing high y volvió por debajo.
-   */
-  private detectLiquiditySweep(
-    candles: Candle[],
-    swings: ReturnType<typeof findSwings>,
-    isBull: boolean
-  ): { extremePrice: number } | null {
-    const recent = candles.slice(-10);
-    if (isBull) {
-      const swingLows = swings.filter(s => s.type === 'low').slice(-5).map(s => s.price);
-      if (swingLows.length < 2) return null;
-      const level = Math.max(...swingLows.slice(0, -1)); // swing low previo
-      // Buscar vela que penetró el nivel y luego cerró por encima
-      for (let j = recent.length - 5; j < recent.length - 1; j++) {
-        if (recent[j].low < level && recent[j].close > level) {
-          return { extremePrice: recent[j].low };
-        }
-      }
-    } else {
-      const swingHighs = swings.filter(s => s.type === 'high').slice(-5).map(s => s.price);
-      if (swingHighs.length < 2) return null;
-      const level = Math.min(...swingHighs.slice(0, -1));
-      for (let j = recent.length - 5; j < recent.length - 1; j++) {
-        if (recent[j].high > level && recent[j].close < level) {
-          return { extremePrice: recent[j].high };
-        }
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Order Block: vela con cuerpo grande seguida de movimiento fuerte en la misma dirección.
-   * Bullish OB: vela bajista grande seguida de rally > 1.5 ATR.
-   * Bearish OB: vela alcista grande seguida de caída > 1.5 ATR.
-   */
-  private findOrderBlock(
-    candles: Candle[],
-    isBull: boolean,
-    lastAtr: number
-  ): { price: number } | null {
+  private findOrderBlock(candles: Candle[], isBull: boolean, lastAtr: number): { price: number } | null {
     const recent = candles.slice(-this.obLookback);
-    const last = candles[candles.length - 1];
-
+    const last   = candles[candles.length - 1];
     for (let j = recent.length - 8; j < recent.length - 2; j++) {
       const c = recent[j];
-      const bodySize = Math.abs(c.close - c.open);
-      if (bodySize < lastAtr * 0.5) continue;
-
+      if (Math.abs(c.close - c.open) < lastAtr * 0.5) continue;
       if (isBull) {
-        // OB alcista: vela bajista (roja) cuya zona es ahora soporte
-        const isRedCandle = c.close < c.open;
-        const obTop = c.open; // tope del OB bajista es el open
-        const obBot = c.close;
-        // Precio actual dentro del rango del OB
-        if (isRedCandle && last.close >= obBot && last.close <= obTop) {
-          return { price: obBot };
-        }
+        if (c.close < c.open && last.close >= c.close && last.close <= c.open)
+          return { price: c.close };
       } else {
-        // OB bajista: vela alcista (verde) cuya zona es ahora resistencia
-        const isGreenCandle = c.close > c.open;
-        const obTop = c.close;
-        const obBot = c.open;
-        if (isGreenCandle && last.close >= obBot && last.close <= obTop) {
-          return { price: obTop };
-        }
+        if (c.close > c.open && last.close >= c.open && last.close <= c.close)
+          return { price: c.close };
       }
     }
     return null;
   }
 
-  /**
-   * Fair Value Gap: gap de precio entre 3 velas consecutivas.
-   * Bullish FVG: high[i-2] < low[i] — gap al alza que el precio está visitando.
-   * Bearish FVG: low[i-2] > high[i] — gap a la baja.
-   */
-  private findFairValueGap(
-    candles: Candle[],
-    isBull: boolean
-  ): { top: number; bottom: number } | null {
+  private findFairValueGap(candles: Candle[], isBull: boolean): { top: number; bottom: number } | null {
     const last = candles[candles.length - 1];
-
     for (let j = candles.length - 20; j < candles.length - 2; j++) {
       const c0 = candles[j];
       const c2 = candles[j + 2];
-
-      if (isBull) {
-        // FVG alcista: gap entre high de c0 y low de c2
-        if (c0.high < c2.low) {
-          const fvgTop = c2.low;
-          const fvgBot = c0.high;
-          // Precio actual dentro del FVG
-          if (last.close >= fvgBot && last.close <= fvgTop) {
-            return { top: fvgTop, bottom: fvgBot };
-          }
-        }
-      } else {
-        // FVG bajista
-        if (c0.low > c2.high) {
-          const fvgTop = c0.low;
-          const fvgBot = c2.high;
-          if (last.close >= fvgBot && last.close <= fvgTop) {
-            return { top: fvgTop, bottom: fvgBot };
-          }
-        }
+      if (isBull && c0.high < c2.low) {
+        if (last.close >= c0.high && last.close <= c2.low)
+          return { top: c2.low, bottom: c0.high };
+      } else if (!isBull && c0.low > c2.high) {
+        if (last.close >= c2.high && last.close <= c0.low)
+          return { top: c0.low, bottom: c2.high };
       }
     }
     return null;

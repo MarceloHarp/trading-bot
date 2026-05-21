@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
 import type { Candle, Direction, ExchangeBalance, OrderResult } from '../types';
+import type { IExchangeAdapter } from './IExchangeAdapter';
 
 /**
  * Binance Spot Testnet adapter.
@@ -17,7 +18,7 @@ import type { Candle, Direction, ExchangeBalance, OrderResult } from '../types';
  *
  * WS streams: <symbol>@kline_<interval>
  */
-export class BinanceAdapter {
+export class BinanceAdapter implements IExchangeAdapter {
   private readonly rest: AxiosInstance;
   private readonly ws = new Map<string, WebSocket>();
 
@@ -120,7 +121,8 @@ export class BinanceAdapter {
   async placeMarketOrder(
     symbol: string,
     side: Direction,
-    quantity: number
+    quantity: number,
+    _reduceOnly = false,  // ignorado en spot, solo para cumplir IExchangeAdapter
   ): Promise<OrderResult> {
     const params = {
       symbol,

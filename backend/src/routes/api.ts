@@ -1,15 +1,16 @@
 import express, { Router } from 'express';
 import { prisma } from '../db/prisma';
-import type { BinanceAdapter } from '../exchanges/BinanceAdapter';
+import type { IExchangeAdapter } from '../exchanges/IExchangeAdapter';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
+import { sendWeeklyReport } from '../integrations/AlertService';
 
 
 function parseSignalMeta<T extends { meta: string | null }>(s: T) {
   return { ...s, meta: s.meta ? JSON.parse(s.meta) : null };
 }
 
-export function buildRoutes(exchange: BinanceAdapter): Router {
+export function buildRoutes(exchange: IExchangeAdapter): Router {
   const router = Router();
 
   router.get('/health', async (_req, res) => {
@@ -284,6 +285,20 @@ if (process.env.NODE_ENV !== 'production') {
       res.json({ ok: true });
     } catch (err) {
       res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
+  // Test de email — envía un email de prueba sin correr el backtest
+  router.post('/test-email', async (_req: any, res: any) => {
+    try {
+      await sendWeeklyReport(
+        [{ symbol: 'TEST', stats: { global: { totalTrades: 5, wins: 3, losses: 2, winRate: 60, totalPnlPct: 2.5, maxDrawdown: 1.2, avgWin: 1.8, avgLoss: -0.9, profitFactor: 1.5, finalCapital: 10250, openTrades: 0, equityCurve: [] }, byStrategy: {}, candlesCount: 100 } }],
+        new Date().toISOString().split('T')[0],
+        new Date().toISOString().split('T')[0]
+      );
+      res.json({ ok: true, message: 'Email de prueba enviado. Revisá negro.y.gti@gmail.com' });
+    } catch (err) {
+      res.status(500).json({ ok: false, error: (err as Error).message });
     }
   });
 

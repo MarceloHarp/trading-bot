@@ -6,5 +6,5 @@ export interface Strategy {
    * Evalúa la estrategia con las velas dadas.
    * Devuelve un Signal si hay setup válido, o null si no hay entrada.
    */
-  evaluate(symbol: string, timeframe: string, candles: Candle[]): Signal | null;
+  evaluate(symbol: string, timeframe: string, candles: Candle[], htfCandles?: Candle[]): Signal | null;
 }

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios from 'axios';
 import type { Candle } from '../types';
-import { sma, ema, atr, findSwings } from '../core/indicators';
+import { sma, ema, atr, findSwings, adx, donchian } from '../core/indicators';
 
 const router = Router();
 
@@ -279,43 +279,62 @@ function calcStats(trades: BacktestTrade[], initialCapital: number, riskPct: num
 
 
 function runSmartMoney(candles: Candle[]): { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] {
-  const closes = candles.map(c => c.close);
+  const closes  = candles.map(c => c.close);
+  const volumes = candles.map(c => c.volume);
   const sma200arr = sma(closes, 200);
-  const atrArr = atr(candles, 14);
+  const avgVolArr = sma(volumes, 20);
+  const atrArr    = atr(candles, 14);
+  const rsiArr    = rsi(closes, 14);
   const swingsArr = findSwings(candles, 5);
   const swingHighs = swingsArr.filter((s: {type:string}) => s.type === 'high');
   const swingLows  = swingsArr.filter((s: {type:string}) => s.type === 'low');
   const signals: { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
   const cooldown = new Map<string, number>();
 
-  for (let i = 210; i < candles.length - 1; i++) {
+  for (let i = 215; i < candles.length - 1; i++) {
     const price = closes[i];
-    const prevPrice = closes[i - 1];
-    if (isNaN(sma200arr[i]) || isNaN(atrArr[i])) continue;
+    if (isNaN(sma200arr[i]) || isNaN(atrArr[i]) || isNaN(rsiArr[i]) || isNaN(avgVolArr[i])) continue;
+
     const aboveMa200 = price > sma200arr[i];
     const recentHighs = swingHighs.filter((s: {index:number}) => s.index < i && s.index >= i - 20);
     const recentLows  = swingLows.filter((s: {index:number}) => s.index < i && s.index >= i - 20);
     const ck = Math.floor(i / 6).toString();
 
-    if (aboveMa200 && recentLows.length >= 2) {
-      const lastLow = recentLows[recentLows.length - 1] as {price:number};
-      const nearSupport = Math.abs(price - lastLow.price) / price < 0.015;
-      if (nearSupport && !cooldown.has('B' + ck)) {
+    const candleLow  = candles[i].low;
+    const candleHigh = candles[i].high;
+    const candleOpen = candles[i].open;
+    const prevHigh   = candles[i - 1].high;
+    const prevLow    = candles[i - 1].low;
+
+    // BUY: LOW toca cualquiera de los últimos 3 swing lows + vela de reversión
+    if (aboveMa200 && recentLows.length >= 1 && rsiArr[i] < 70) {
+      const levels = recentLows.slice(-3).map((s: {price:number}) => s.price);
+      const candleRange = Math.max(candleHigh - candleLow, 0.0001);
+      const testedSupport = levels.some(lvl => candleLow <= lvl + atrArr[i]*0.5 && candleLow >= lvl - atrArr[i]*0.5);
+      const bullishClose  = price > candleOpen && (price - candleOpen) / candleRange > 0.35;
+      if (testedSupport && bullishClose && !cooldown.has('B' + ck)) {
         cooldown.set('B' + ck, i);
-        const sl = Math.max(lastLow.price - atrArr[i] * 0.5, price * 0.95);
+        const bestLevel = levels.reduce((best, lvl) => Math.abs(candleLow - lvl) < Math.abs(candleLow - best) ? lvl : best);
+        const sl  = bestLevel - atrArr[i] * 0.5;
         const risk = price - sl;
-        const tp = Math.max(price + risk * 3, price * 1.05);
+        if (risk <= 0) continue;
+        const tp  = price + risk * 4;
         signals.push({ idx: i, direction: 'BUY', entry: price, sl, tp, strategy: 'SmartMoney' });
       }
     }
-    if (!aboveMa200 && recentHighs.length >= 2) {
-      const lastHigh = recentHighs[recentHighs.length - 1] as {price:number};
-      const nearResistance = Math.abs(price - lastHigh.price) / price < 0.015;
-      if (nearResistance && !cooldown.has('S' + ck)) {
+    // SELL: HIGH toca cualquiera de los últimos 3 swing highs
+    if (!aboveMa200 && recentHighs.length >= 1 && rsiArr[i] > 30) {
+      const levels = recentHighs.slice(-3).map((s: {price:number}) => s.price);
+      const candleRangeB = Math.max(candleHigh - candleLow, 0.0001);
+      const testedResist = levels.some(lvl => candleHigh >= lvl - atrArr[i]*0.5 && candleHigh <= lvl + atrArr[i]*0.5);
+      const bearishClose = price < candleOpen && (candleOpen - price) / candleRangeB > 0.35;
+      if (testedResist && bearishClose && !cooldown.has('S' + ck)) {
         cooldown.set('S' + ck, i);
-        const sl = Math.min(lastHigh.price + atrArr[i] * 0.5, price * 1.05);
+        const bestLevel = levels.reduce((best, lvl) => Math.abs(candleHigh - lvl) < Math.abs(candleHigh - best) ? lvl : best);
+        const sl  = bestLevel + atrArr[i] * 0.5;
         const risk = sl - price;
-        const tp = Math.min(price - risk * 3, price * 0.95);
+        if (risk <= 0) continue;
+        const tp  = price - risk * 4;
         signals.push({ idx: i, direction: 'SELL', entry: price, sl, tp, strategy: 'SmartMoney' });
       }
     }
@@ -324,60 +343,169 @@ function runSmartMoney(candles: Candle[]): { idx: number; direction: 'BUY' | 'SE
 }
 
 function runDruLozano(candles: Candle[]): { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] {
-  const closes = candles.map(c => c.close);
+  const closes  = candles.map(c => c.close);
   const ma50arr  = sma(closes, 50);
   const ma100arr = sma(closes, 100);
   const ma150arr = sma(closes, 150);
   const ma200arr = sma(closes, 200);
   const atrArr   = atr(candles, 14);
-  const swingsArr = findSwings(candles, 5);
   const signals: { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
   const cooldown = new Map<string, number>();
 
   for (let i = 210; i < candles.length - 1; i++) {
     const price = closes[i];
     if ([ma50arr[i], ma100arr[i], ma150arr[i], ma200arr[i], atrArr[i]].some(isNaN)) continue;
+
     const bullStack = price > ma50arr[i] && ma50arr[i] > ma100arr[i] && ma100arr[i] > ma150arr[i] && ma150arr[i] > ma200arr[i];
     const bearStack = price < ma50arr[i] && ma50arr[i] < ma100arr[i] && ma100arr[i] < ma150arr[i] && ma150arr[i] < ma200arr[i];
     if (!bullStack && !bearStack) continue;
 
-    // Liquidity Sweep: en las ultimas 8 velas, buscar vela que penetro un swing y revirtio
-    const recent = candles.slice(Math.max(0, i - 8), i + 1);
-    const swingLows  = swingsArr.filter((s: {type:string;index:number}) => s.type === 'low'  && s.index < i - 8);
-    const swingHighs = swingsArr.filter((s: {type:string;index:number}) => s.type === 'high' && s.index < i - 8);
-    let hasSweep = false;
-    let sweepExtreme = price;
+    const last       = candles[i];
+    const candleRange = Math.max(last.high - last.low, 0.0001);
+    const bodyRatio  = Math.abs(last.close - last.open) / candleRange;
+    const ck = Math.floor(i / 6).toString();
 
-    if (bullStack && swingLows.length >= 2) {
-      const level = Math.max(...swingLows.slice(-3).map((s: {price:number}) => s.price));
-      for (const c of recent.slice(0, -1)) {
-        if (c.low < level && c.close > level) { hasSweep = true; sweepExtreme = c.low; break; }
-      }
-    }
-    if (bearStack && swingHighs.length >= 2) {
-      const level = Math.min(...swingHighs.slice(-3).map((s: {price:number}) => s.price));
-      for (const c of recent.slice(0, -1)) {
-        if (c.high > level && c.close < level) { hasSweep = true; sweepExtreme = c.high; break; }
-      }
-    }
-    if (!hasSweep) continue;
-
-    const ck = Math.floor(i / 8).toString();
-    if (bullStack && !cooldown.has('B' + ck)) {
+    if (bullStack) {
+      // Pullback: alguna de las últimas 3 velas tocó la MA50
+      const pulledBack = [1, 2, 3].some(o => i - o >= 0 && candles[i - o].low <= ma50arr[i - o] + atrArr[i] * 0.3);
+      // Bounce: cierre por encima de MA50 con cuerpo alcista fuerte
+      const bounced = price > ma50arr[i] && price > last.open && bodyRatio > 0.5;
+      if (!pulledBack || !bounced || cooldown.has('B' + ck)) continue;
       cooldown.set('B' + ck, i);
-      const sl = Math.min(sweepExtreme - atrArr[i] * 0.3, price * 0.97);
+      const recentMin = Math.min(...[0, 1, 2, 3].map(o => candles[i - o]?.low ?? Infinity));
+      const sl  = recentMin - atrArr[i] * 0.3;
       const risk = price - sl;
-      const tp = Math.max(price + risk * 3, price * 1.05);
+      if (risk <= 0) continue;
+      const tp  = price + risk * 3;
       signals.push({ idx: i, direction: 'BUY', entry: price, sl, tp, strategy: 'DruLozano' });
-    } else if (bearStack && !cooldown.has('S' + ck)) {
+    } else {
+      // Pullback bajista: alguna de las últimas 3 velas alcanzó la MA50
+      const pulledBack = [1, 2, 3].some(o => i - o >= 0 && candles[i - o].high >= ma50arr[i - o] - atrArr[i] * 0.3);
+      const bounced = price < ma50arr[i] && price < last.open && bodyRatio > 0.5;
+      if (!pulledBack || !bounced || cooldown.has('S' + ck)) continue;
       cooldown.set('S' + ck, i);
-      const sl = Math.max(sweepExtreme + atrArr[i] * 0.3, price * 1.03);
+      const recentMax = Math.max(...[0, 1, 2, 3].map(o => candles[i - o]?.high ?? -Infinity));
+      const sl  = recentMax + atrArr[i] * 0.3;
       const risk = sl - price;
-      const tp = Math.min(price - risk * 3, price * 0.95);
+      if (risk <= 0) continue;
+      const tp  = price - risk * 3;
       signals.push({ idx: i, direction: 'SELL', entry: price, sl, tp, strategy: 'DruLozano' });
     }
   }
   return signals;
+}
+
+// MarceMillo v2: BREAKOUT-RETEST. Espera el pullback al nivel roto en vez
+// de entrar en el candle de ruptura. Backtest 28d: -3.86% → +14.76%, WR 30% → 50%.
+// Params V11: retestWindow=10, slAtrMult=1.0, rr=2, volMult=1.2, minAdx=20.
+function runMarceMillo(candles: Candle[]): { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] {
+  const closes  = candles.map(c => c.close);
+  const volumes = candles.map(c => c.volume);
+  const ema50arr  = ema(closes, 50);
+  const sma200arr = sma(closes, 200);
+  const atrArr    = atr(candles, 14);
+  const adxArr    = adx(candles, 14);
+  const don       = donchian(candles, 20);
+  const volAvg    = sma(volumes, 20);
+  const signals: { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
+  const cooldown = new Map<string, number>();
+
+  const atrAvgArr = sma(atrArr.filter(v => !isNaN(v)), 14);
+  const lastAtrAvg = atrAvgArr[atrAvgArr.length - 1];
+  if (isNaN(lastAtrAvg)) return signals;
+
+  const RETEST_WINDOW = 10, SL_ATR = 1.0, RR = 2, VOL_MULT = 1.2, MIN_ADX = 20, ABORT = 0.03;
+
+  for (let i = 50; i < candles.length - 1; i++) {
+    if ([ema50arr[i], atrArr[i], adxArr[i], volAvg[i], don.upper[i-1], don.lower[i-1]].some(isNaN)) continue;
+    const bk = candles[i];
+    const ck = Math.floor(i / 6).toString();
+
+    // Filtros del breakout
+    if (adxArr[i] < MIN_ADX) continue;
+    if (bk.volume < volAvg[i] * VOL_MULT) continue;
+    if (atrArr[i] < lastAtrAvg * 1.1) continue;
+
+    // LONG: breakout en i, retest en alguna de las próximas RETEST_WINDOW velas
+    if (bk.close > don.upper[i-1] && bk.close > ema50arr[i] && bk.close > bk.open) {
+      if (cooldown.has('B' + ck)) continue;
+      const level = don.upper[i-1];
+      for (let j = i + 1; j <= Math.min(i + RETEST_WINDOW, candles.length - 2); j++) {
+        const rc = candles[j];
+        if (rc.low <= level * 1.002 && rc.close > level && rc.close > rc.open) {
+          cooldown.set('B' + ck, i);
+          const sl = level - atrArr[j] * SL_ATR;
+          const risk = rc.close - sl;
+          if (risk <= 0) break;
+          signals.push({ idx: j, direction: 'BUY', entry: rc.close, sl, tp: rc.close + risk * RR, strategy: 'MarceMillo' });
+          break;
+        }
+        if (rc.close > level * (1 + ABORT)) break; // se fue lejos sin retest
+        if (rc.close < level) break;               // perdió el nivel
+      }
+      continue;
+    }
+
+    // SHORT: breakdown en i (proxy HTF: precio >2% bajo SMA200), retest del nivel inferior
+    if (bk.close < don.lower[i-1] && bk.close < ema50arr[i] && bk.close < bk.open
+        && !isNaN(sma200arr[i]) && bk.close < sma200arr[i] * 0.98) {
+      if (cooldown.has('S' + ck)) continue;
+      const level = don.lower[i-1];
+      for (let j = i + 1; j <= Math.min(i + RETEST_WINDOW, candles.length - 2); j++) {
+        const rc = candles[j];
+        if (rc.high >= level * 0.998 && rc.close < level && rc.close < rc.open) {
+          cooldown.set('S' + ck, i);
+          const sl = level + atrArr[j] * SL_ATR;
+          const risk = sl - rc.close;
+          if (risk <= 0) break;
+          signals.push({ idx: j, direction: 'SELL', entry: rc.close, sl, tp: rc.close - risk * RR, strategy: 'MarceMillo' });
+          break;
+        }
+        if (rc.close < level * (1 - ABORT)) break;
+        if (rc.close > level) break;
+      }
+    }
+  }
+  return signals;
+}
+
+// ---- Función exportada para uso interno (backtest semanal) ----
+export async function runBacktestForService(
+  symbol: string,
+  interval: string,
+  startDate: string,
+  endDate: string,
+  strategies: string[]
+): Promise<{
+  global: ReturnType<typeof calcStats>;
+  byStrategy: Record<string, ReturnType<typeof calcStats>>;
+  candlesCount: number;
+}> {
+  const candles = await fetchCandles(
+    symbol, interval,
+    new Date(startDate).getTime(),
+    new Date(endDate).getTime()
+  );
+  if (candles.length < 200) {
+    const empty = calcStats([], 10000, 1);
+    return { global: empty, byStrategy: {}, candlesCount: candles.length };
+  }
+
+  const allSignals: { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
+  if (strategies.includes('Confluence'))    allSignals.push(...runConfluence(candles));
+  if (strategies.includes('VWAPMomentum')) allSignals.push(...runVWAP(candles));
+  if (strategies.includes('SmartMoney'))   allSignals.push(...runSmartMoney(candles));
+  if (strategies.includes('DruLozano'))    allSignals.push(...runDruLozano(candles));
+  if (strategies.includes('MarceMillo'))   allSignals.push(...runMarceMillo(candles));
+  allSignals.sort((a, b) => a.idx - b.idx);
+
+  const trades = simulateTrades(candles, allSignals, 1);
+  const global = calcStats(trades, 10000, 1);
+  const byStrategy: Record<string, ReturnType<typeof calcStats>> = {};
+  for (const strat of strategies) {
+    byStrategy[strat] = calcStats(trades.filter(t => t.strategy === strat), 10000, 1);
+  }
+  return { global, byStrategy, candlesCount: candles.length };
 }
 
 // ---- Endpoint principal ----
@@ -418,6 +546,7 @@ router.post('/run', async (req: any, res: any) => {
     if (strategies.includes('VWAPMomentum')) allSignals.push(...runVWAP(candles));
     if (strategies.includes('SmartMoney'))   allSignals.push(...runSmartMoney(candles));
     if (strategies.includes('DruLozano'))    allSignals.push(...runDruLozano(candles));
+    if (strategies.includes('MarceMillo'))   allSignals.push(...runMarceMillo(candles));
 
     // Ordenar por idx
     allSignals.sort((a, b) => a.idx - b.idx);

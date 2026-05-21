@@ -30,11 +30,18 @@ export const config = {
   nodeEnv: optional('NODE_ENV', 'development'),
   corsOrigin: optional('CORS_ORIGIN', 'http://localhost:3000'),
   database: { url: required('DATABASE_URL') },
+  tradingMode: optional('TRADING_MODE', 'spot') as 'spot' | 'futures',
   binance: {
     apiKey: optional('BINANCE_TESTNET_API_KEY', ''),
     apiSecret: optional('BINANCE_TESTNET_API_SECRET', ''),
     restUrl: optional('BINANCE_REST_URL', 'https://testnet.binance.vision'),
     wsUrl: optional('BINANCE_WS_URL', 'wss://stream.testnet.binance.vision'),
+  },
+  futures: {
+    apiKey: optional('BINANCE_FUTURES_API_KEY', ''),
+    apiSecret: optional('BINANCE_FUTURES_API_SECRET', ''),
+    restUrl: optional('BINANCE_FUTURES_REST_URL', 'https://testnet.binancefuture.com'),
+    leverage: num('FUTURES_LEVERAGE', 5),
   },
   claude: {
     apiKey: optional('CLAUDE_API_KEY', ''),
@@ -52,6 +59,10 @@ export const config = {
     maxSignalsPerHour: num('MAX_SIGNALS_PER_HOUR', 0),
     maxSignalsPerDay: num('MAX_SIGNALS_PER_DAY', 0),
     maxOpenTrades: num('MAX_OPEN_TRADES', 5),
+    // BTC es "el rey": define el régimen macro pero no se opera directamente.
+    marketRegimeSymbol: optional('MARKET_REGIME_SYMBOL', 'BTCUSDT'),
+    nonTradableSymbols: optional('NON_TRADABLE_SYMBOLS', 'BTCUSDT')
+      .split(',').map((s) => s.trim()).filter(Boolean),
   },
   alerts: {
     email: {

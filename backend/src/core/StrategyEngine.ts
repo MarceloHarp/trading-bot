@@ -1,17 +1,19 @@
 import { Server as SocketIOServer } from 'socket.io';
 import { prisma } from '../db/prisma';
-import { BinanceAdapter } from '../exchanges/BinanceAdapter';
+import type { IExchangeAdapter } from '../exchanges/IExchangeAdapter';
 import { claudeAPI } from '../integrations/ClaudeAPI';
 import { alertRateLimitReached, alertSignal, alertSignalOffline } from '../integrations/AlertService';
 import type { Candle, Signal } from '../types';
 import { config } from '../utils/config';
 import { logger } from '../utils/logger';
+import { ema } from './indicators';
 import { OrderExecutor } from './OrderExecutor';
 import { ConfluenceStrategy } from './strategies/Confluence';
 import { SmartMoneyStrategy } from './strategies/SmartMoney';
 import type { Strategy } from './strategies/Strategy';
 import { VWAPMomentumStrategy } from './strategies/VWAPMomentum';
 import { DruLozanoStrategy } from './strategies/DruLozano';
+import { MarceMilloStrategy } from './strategies/MarceMillo';
 
 export class StrategyEngine {
   private readonly strategies: Strategy[];
@@ -23,9 +25,21 @@ export class StrategyEngine {
   private signalTimestamps: number[] = [];
   private rateLimitAlertedHour = false;
   private rateLimitAlertedDay = false;
+  // Régimen macro definido por BTC ("el rey"). Filtra dirección de señales en alts.
+  private marketRegime: 'bullish' | 'bearish' | 'neutral' = 'neutral';
+  private readonly nonTradable = new Set(config.bot.nonTradableSymbols);
 
-  constructor(private readonly exchange: BinanceAdapter, private readonly io: SocketIOServer) {
-    this.strategies = [new SmartMoneyStrategy(), new VWAPMomentumStrategy(), new ConfluenceStrategy(), new DruLozanoStrategy()];
+  constructor(private readonly exchange: IExchangeAdapter, private readonly io: SocketIOServer) {
+    // Solo las estrategias rentables corren en live.
+    // Confluence (-0.05%) y DruLozano (-0.03%) están comentadas — pierden dinero según backtest 28d.
+    // Ver ESTRATEGIAS_APRENDIZAJES.md para detalles.
+    this.strategies = [
+      new SmartMoneyStrategy(),
+      new VWAPMomentumStrategy(),
+      new MarceMilloStrategy(),
+      // new ConfluenceStrategy(),  // DEACTIVATED: -0.05% PnL, 22.0% WR (28d backtest)
+      // new DruLozanoStrategy(),   // DEACTIVATED: -0.03% PnL, 23.7% WR (28d backtest)
+    ];
     this.executor = new OrderExecutor(exchange);
   }
 
@@ -128,6 +142,52 @@ export class StrategyEngine {
     return Date.now() - t < this.cooldownMs;
   }
 
+  /**
+   * Calcula el régimen macro a partir de BTC ("el rey") en 4h.
+   * bullish: close > EMA200 y EMA50 > EMA200
+   * bearish: close < EMA200 y EMA50 < EMA200
+   * neutral: en transición / sin datos suficientes
+   */
+  private computeRegime(candles4h: Candle[]): 'bullish' | 'bearish' | 'neutral' {
+    const closes = candles4h.map((c) => c.close);
+    if (closes.length < 200) return 'neutral';
+    const ema50 = ema(closes, 50);
+    const ema200 = ema(closes, 200);
+    const last = closes[closes.length - 1];
+    const e50 = ema50[ema50.length - 1];
+    const e200 = ema200[ema200.length - 1];
+    if ([e50, e200].some((v) => Number.isNaN(v))) return 'neutral';
+    if (last > e200 && e50 > e200) return 'bullish';
+    if (last < e200 && e50 < e200) return 'bearish';
+    return 'neutral';
+  }
+
+  private async updateMarketRegime() {
+    const sym = config.bot.marketRegimeSymbol;
+    if (!sym) return;
+    try {
+      const c4h = await this.exchange.getCandles(sym, '4h', 300);
+      const prev = this.marketRegime;
+      this.marketRegime = this.computeRegime(c4h);
+      if (prev !== this.marketRegime) {
+        logger.info(`👑 Régimen BTC cambió: ${prev} → ${this.marketRegime.toUpperCase()}`);
+      }
+    } catch (err) {
+      logger.warn(`updateMarketRegime error: ${(err as Error).message}`);
+    }
+  }
+
+  /** El rey manda: bloquea longs si BTC bearish, shorts si BTC bullish. */
+  private allowedByRegime(direction: 'BUY' | 'SELL'): boolean {
+    if (this.marketRegime === 'bearish' && direction === 'BUY') return false;
+    if (this.marketRegime === 'bullish' && direction === 'SELL') return false;
+    return true;
+  }
+
+  getMarketRegime() {
+    return this.marketRegime;
+  }
+
   private async tick() {
     if (!this.running) return;
     try {
@@ -135,29 +195,59 @@ export class StrategyEngine {
     } catch (err) {
       logger.warn('monitorOpenTrades error: ' + (err as Error).message);
     }
+    // El rey primero: actualizar régimen macro antes de evaluar alts
+    await this.updateMarketRegime();
     for (const symbol of config.bot.symbols) {
+      // Fase 1: pre-cargar velas de todos los timeframes para poder pasar HTF a estrategias
+      const candleMap = new Map<string, Candle[]>();
       for (const timeframe of config.bot.timeframes) {
-        let candles: Candle[];
         try {
-          candles = await this.exchange.getCandles(symbol, timeframe, 300);
+          const candles = await this.exchange.getCandles(symbol, timeframe, 300);
+          if (candles.length >= 100) {
+            candleMap.set(timeframe, candles);
+            this.persistCandles(candles).catch(() => undefined);
+          }
         } catch (err) {
           logger.warn(`getCandles fallo ${symbol} ${timeframe}: ${(err as Error).message}`);
-          continue;
         }
-        if (candles.length < 100) continue;
-        this.persistCandles(candles).catch(() => undefined);
+      }
+
+      // Fase 2: evaluar estrategias con acceso a candles de todos los TF
+      for (const timeframe of config.bot.timeframes) {
+        const candles = candleMap.get(timeframe);
+        if (!candles) continue;
         for (const strategy of this.strategies) {
           if (await this.checkLimits()) continue;
           const key = this.cooldownKey(symbol, timeframe, strategy.name);
           if (this.inCooldown(key)) continue;
           let signal: Signal | null = null;
           try {
-            signal = strategy.evaluate(symbol, timeframe, candles);
+            // SmartMoney y MarceMillo en 1h reciben candles 4h para confirmación HTF
+            const needsHTF = (strategy.name === 'SmartMoney' || strategy.name === 'MarceMillo') && timeframe === '1h';
+            const htfCandles = needsHTF ? candleMap.get('4h') : undefined;
+            signal = strategy.evaluate(symbol, timeframe, candles, htfCandles);
           } catch (err) {
             logger.warn(`Strategy ${strategy.name} error: ${(err as Error).message}`);
             continue;
           }
           if (!signal) continue;
+
+          // BTC ("el rey") se monitorea pero no se opera: emitimos señal/alerta sin ejecutar trade
+          if (this.nonTradable.has(symbol)) {
+            this.cooldown.set(key, Date.now());
+            logger.info(`👑 Señal BTC ${signal.direction} ${signal.timeframe} (solo monitoreo, no se opera) @ ${signal.entryPrice}`);
+            this.io.emit('signal', { ...signal, monitorOnly: true });
+            if (global.__botOffline) void alertSignalOffline(signal);
+            else void alertSignal(signal);
+            continue;
+          }
+
+          // Filtro de régimen: el rey manda sobre las alts
+          if (!this.allowedByRegime(signal.direction)) {
+            logger.debug(`Señal ${signal.direction} ${symbol} bloqueada — régimen BTC ${this.marketRegime}`);
+            continue;
+          }
+
           this.cooldown.set(key, Date.now());
           await this.handleSignal(signal);
         }
@@ -239,6 +329,8 @@ export class StrategyEngine {
       maxOpenTrades: config.bot.maxOpenTrades,
       openTrades: openCount,
       isLimited: await this.checkLimits(),
+      marketRegime: this.marketRegime,
+      regimeSymbol: config.bot.marketRegimeSymbol,
     };
   }
 }

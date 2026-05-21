@@ -194,3 +194,64 @@ export async function alertRateLimitReached(limit: string): Promise<void> {
   const body = `El bot alcanzo el limite configurado: ${limit}. Se reanuda automaticamente al inicio del proximo periodo.`;
   await Promise.all([sendEmail(subject, body), sendTelegram(body)]);
 }
+
+/* ==========================================
+ * REPORTE BACKTEST SEMANAL
+ * ========================================== */
+export async function sendWeeklyReport(
+  results: Array<{
+    symbol: string;
+    stats: { global: any; byStrategy: Record<string, any>; candlesCount: number };
+  }>,
+  startDate: string,
+  endDate: string
+): Promise<void> {
+  const lines: string[] = [
+    `REPORTE BACKTEST SEMANAL`,
+    `Periodo: ${startDate} -> ${endDate}`,
+    `Simbolos: ${results.length} | Timeframe: 1h | Estrategias: 4`,
+    ``,
+  ];
+
+  // Resumen global acumulado
+  let totalTrades = 0, totalWins = 0, totalPnl = 0;
+  for (const r of results) {
+    totalTrades += r.stats.global.totalTrades;
+    totalWins  += r.stats.global.wins;
+    totalPnl   += r.stats.global.totalPnlPct;
+  }
+  const overallWR  = totalTrades ? ((totalWins / totalTrades) * 100).toFixed(1) : '0.0';
+  const avgPnl     = results.length ? (totalPnl / results.length).toFixed(2) : '0.00';
+  lines.push(`GLOBAL: ${totalTrades} trades | Win Rate: ${overallWR}% | PnL promedio: ${Number(avgPnl) >= 0 ? '+' : ''}${avgPnl}%`);
+  lines.push('');
+
+  // Top performers (por PnL)
+  const sorted = [...results].sort((a, b) => b.stats.global.totalPnlPct - a.stats.global.totalPnlPct);
+  lines.push('--- RANKING POR PnL ---');
+  for (const r of sorted) {
+    const g = r.stats.global;
+    const pnlStr = g.totalPnlPct >= 0 ? `+${g.totalPnlPct}%` : `${g.totalPnlPct}%`;
+    lines.push(`${r.symbol.padEnd(10)} ${g.totalTrades}t | WR:${g.winRate}% | PnL:${pnlStr} | MaxDD:${g.maxDrawdown}%`);
+  }
+  lines.push('');
+
+  // Detalle por estrategia (acumulado entre todos los símbolos)
+  const stratNames = ['SmartMoney', 'Confluence', 'VWAPMomentum', 'DruLozano', 'MarceMillo'];
+  lines.push('--- POR ESTRATEGIA (acumulado) ---');
+  for (const strat of stratNames) {
+    let st = 0, sw = 0, spnl = 0, sCount = 0;
+    for (const r of results) {
+      const s = r.stats.byStrategy[strat];
+      if (s && s.totalTrades > 0) { st += s.totalTrades; sw += s.wins; spnl += s.totalPnlPct; sCount++; }
+    }
+    if (st > 0) {
+      const wr = ((sw / st) * 100).toFixed(1);
+      const apnl = sCount ? (spnl / sCount).toFixed(2) : '0.00';
+      lines.push(`${strat.padEnd(14)} ${st}t | WR:${wr}% | PnL promedio:${Number(apnl) >= 0 ? '+' : ''}${apnl}%`);
+    }
+  }
+
+  const body = lines.join('\n');
+  const subject = `📊 Backtest Semanal ${startDate} → ${endDate} | ${overallWR}% WR`;
+  await sendEmail(subject, body);
+}

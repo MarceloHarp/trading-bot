@@ -232,6 +232,90 @@ export function findSwings(
 }
 
 /* =========================================================
+ * Donchian Channels — máximo/mínimo de los últimos N períodos
+ * Útil para detectar breakouts del rango de consolidación.
+ * ========================================================= */
+export interface DonchianResult {
+  upper: number[];
+  lower: number[];
+  middle: number[];
+}
+
+export function donchian(candles: Candle[], period = 20): DonchianResult {
+  const upper: number[] = new Array(candles.length).fill(NaN);
+  const lower: number[] = new Array(candles.length).fill(NaN);
+  const middle: number[] = new Array(candles.length).fill(NaN);
+
+  for (let i = period - 1; i < candles.length; i++) {
+    let hi = -Infinity, lo = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (candles[j].high > hi) hi = candles[j].high;
+      if (candles[j].low < lo) lo = candles[j].low;
+    }
+    upper[i] = hi;
+    lower[i] = lo;
+    middle[i] = (hi + lo) / 2;
+  }
+  return { upper, lower, middle };
+}
+
+/* =========================================================
+ * ADX — Average Directional Index (Wilder)
+ * Mide la FUERZA de la tendencia (no su dirección).
+ * ADX > 20-25 = mercado trending, ADX < 20 = ranging/choppy.
+ * ========================================================= */
+export function adx(candles: Candle[], period = 14): number[] {
+  const out: number[] = new Array(candles.length).fill(NaN);
+  if (candles.length < period * 2) return out;
+
+  const tr: number[] = new Array(candles.length).fill(0);
+  const plusDM: number[] = new Array(candles.length).fill(0);
+  const minusDM: number[] = new Array(candles.length).fill(0);
+
+  for (let i = 1; i < candles.length; i++) {
+    const upMove = candles[i].high - candles[i - 1].high;
+    const downMove = candles[i - 1].low - candles[i].low;
+    plusDM[i] = upMove > downMove && upMove > 0 ? upMove : 0;
+    minusDM[i] = downMove > upMove && downMove > 0 ? downMove : 0;
+    const prevClose = candles[i - 1].close;
+    tr[i] = Math.max(
+      candles[i].high - candles[i].low,
+      Math.abs(candles[i].high - prevClose),
+      Math.abs(candles[i].low - prevClose)
+    );
+  }
+
+  // Smoothed con Wilder
+  let sumTR = 0, sumPlus = 0, sumMinus = 0;
+  for (let i = 1; i <= period; i++) {
+    sumTR += tr[i]; sumPlus += plusDM[i]; sumMinus += minusDM[i];
+  }
+  let smTR = sumTR, smPlus = sumPlus, smMinus = sumMinus;
+
+  const dx: number[] = new Array(candles.length).fill(NaN);
+  for (let i = period + 1; i < candles.length; i++) {
+    smTR = smTR - smTR / period + tr[i];
+    smPlus = smPlus - smPlus / period + plusDM[i];
+    smMinus = smMinus - smMinus / period + minusDM[i];
+    const plusDI = smTR === 0 ? 0 : (smPlus / smTR) * 100;
+    const minusDI = smTR === 0 ? 0 : (smMinus / smTR) * 100;
+    const denom = plusDI + minusDI;
+    dx[i] = denom === 0 ? 0 : (Math.abs(plusDI - minusDI) / denom) * 100;
+  }
+
+  // ADX = smoothed DX
+  const startIdx = period * 2;
+  if (startIdx >= candles.length) return out;
+  let adxSum = 0;
+  for (let i = period + 1; i <= startIdx; i++) adxSum += dx[i];
+  out[startIdx] = adxSum / period;
+  for (let i = startIdx + 1; i < candles.length; i++) {
+    out[i] = (out[i - 1] * (period - 1) + dx[i]) / period;
+  }
+  return out;
+}
+
+/* =========================================================
  * Helpers
  * ========================================================= */
 export function lastNonNaN(arr: number[]): number {
