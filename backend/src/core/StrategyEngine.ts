@@ -14,14 +14,19 @@ import type { Strategy } from './strategies/Strategy';
 import { VWAPMomentumStrategy } from './strategies/VWAPMomentum';
 import { DruLozanoStrategy } from './strategies/DruLozano';
 import { MarceMilloStrategy } from './strategies/MarceMillo';
+import { SaltandoDelLamboStrategy } from './strategies/SaltandoDelLambo';
+import { GatilloFacilStrategy } from './strategies/GatilloFacil';
+import { ElTigreStrategy } from './strategies/ElTigre';
 
 export class StrategyEngine {
   private readonly strategies: Strategy[];
   private readonly executor: OrderExecutor;
   private running = false;
   private interval: NodeJS.Timeout | null = null;
+  private tickRunning = false;           // guard: evita ticks concurrentes
   private cooldown = new Map<string, number>();
-  private readonly cooldownMs = 60 * 60 * 1000;
+  private readonly cooldownMs    = 60 * 60 * 1000;       // 1h para 1h/4h
+  private readonly cooldownMs1d  = 24 * 60 * 60 * 1000;  // 24h para 1d
   private signalTimestamps: number[] = [];
   private rateLimitAlertedHour = false;
   private rateLimitAlertedDay = false;
@@ -37,6 +42,9 @@ export class StrategyEngine {
       new SmartMoneyStrategy(),
       new VWAPMomentumStrategy(),
       new MarceMilloStrategy(),
+      new SaltandoDelLamboStrategy(),   // range/mean-reversion Donchian, solo 4h (BTC/BNB)
+      new GatilloFacilStrategy(),       // BB fade mean-reversion, solo 4h (ETH/BNB/AVAX) — más trades
+      new ElTigreStrategy(),            // Swing pullback EMA, solo 1d (ETH/BNB/AVAX) — $10/trade
       // new ConfluenceStrategy(),  // DEACTIVATED: -0.05% PnL, 22.0% WR (28d backtest)
       // new DruLozanoStrategy(),   // DEACTIVATED: -0.03% PnL, 23.7% WR (28d backtest)
     ];
@@ -136,10 +144,12 @@ export class StrategyEngine {
     return `${symbol}|${timeframe}|${strategy}`;
   }
 
-  private inCooldown(key: string): boolean {
+  private inCooldown(key: string, timeframe: string): boolean {
     const t = this.cooldown.get(key);
     if (!t) return false;
-    return Date.now() - t < this.cooldownMs;
+    // 1D estrategias: cooldown 24h para no disparar la misma condición varias veces al día
+    const ms = timeframe === '1d' ? this.cooldownMs1d : this.cooldownMs;
+    return Date.now() - t < ms;
   }
 
   /**
@@ -190,6 +200,20 @@ export class StrategyEngine {
 
   private async tick() {
     if (!this.running) return;
+    // Guard: si el tick anterior no terminó, saltear este para evitar señales duplicadas
+    if (this.tickRunning) {
+      logger.debug('Tick anterior aún corriendo — saltando este ciclo');
+      return;
+    }
+    this.tickRunning = true;
+    try {
+      await this._tickBody();
+    } finally {
+      this.tickRunning = false;
+    }
+  }
+
+  private async _tickBody() {
     try {
       await this.executor.monitorOpenTrades((sym) => this.exchange.getPrice(sym));
     } catch (err) {
@@ -217,9 +241,9 @@ export class StrategyEngine {
         const candles = candleMap.get(timeframe);
         if (!candles) continue;
         for (const strategy of this.strategies) {
-          if (await this.checkLimits()) continue;
           const key = this.cooldownKey(symbol, timeframe, strategy.name);
-          if (this.inCooldown(key)) continue;
+          if (this.inCooldown(key, timeframe)) continue;
+          if (await this.checkLimits()) continue;
           let signal: Signal | null = null;
           try {
             // SmartMoney y MarceMillo en 1h reciben candles 4h para confirmación HTF

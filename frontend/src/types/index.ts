@@ -21,6 +21,15 @@ export interface Stats {
   signals: { total: number; approved: number; rejected: number; };
   rateLimit: { signalsLastHour: number; signalsLastDay: number; maxPerHour: number; maxPerDay: number; isLimited: boolean; } | null;
 }
+export interface LivePnl {
+  id: string; symbol: string; direction: Direction;
+  currentPrice: number; unrealizedPct: number; unrealizedUsdt: number;
+  distToSL: number | null; distToTP: number | null;
+}
+export interface ClaudeUsage {
+  totalCostUsd: number; totalTokens: number; calls: number;
+  lastCallAt?: string | null;
+}
 export interface Health {
   status: string; timestamp: string;
   services: { db: boolean; binance: boolean };

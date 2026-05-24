@@ -16,6 +16,17 @@ import { logger } from './utils/logger';
 declare global { var __botOffline: boolean; }
 global.__botOffline = false;
 
+// Auto-kill cualquier proceso previo que tenga el puerto ocupado (evita EADDRINUSE al reiniciar)
+import { execSync } from 'child_process';
+try {
+  const port = process.env.PORT ?? '3001';
+  const out = execSync(`netstat -ano 2>nul | findstr ":${port} "`, { encoding: 'utf8', stdio: ['pipe','pipe','ignore'] });
+  const match = out.match(/LISTENING\s+(\d+)/);
+  if (match && match[1] !== String(process.pid)) {
+    execSync(`taskkill /PID ${match[1]} /F`, { stdio: 'ignore' });
+  }
+} catch { /* puerto libre, ok */ }
+
 (BigInt.prototype as any).toJSON = function () { return Number(this); };
 
 async function main() {

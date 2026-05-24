@@ -302,6 +302,43 @@ if (process.env.NODE_ENV !== 'production') {
     }
   });
 
+  // PnL en vivo de trades abiertos (precio actual vs entry)
+  router.get('/trades/live-pnl', async (_req, res) => {
+    try {
+      const openTrades = await prisma.trade.findMany({ where: { status: 'open' } });
+      const result = await Promise.all(openTrades.map(async (trade) => {
+        let currentPrice = trade.entryPrice;
+        try { currentPrice = await exchange.getPrice(trade.symbol); } catch { /* fallback entry */ }
+
+        const unrealizedPct = trade.direction === 'BUY'
+          ? ((currentPrice - trade.entryPrice) / trade.entryPrice) * 100
+          : ((trade.entryPrice - currentPrice) / trade.entryPrice) * 100;
+
+        const unrealizedUsdt = trade.direction === 'BUY'
+          ? (currentPrice - trade.entryPrice) * trade.quantity
+          : (trade.entryPrice - currentPrice) * trade.quantity;
+
+        // Distancia al SL y TP como % del precio actual (negativo = ya cruzado)
+        const distToSL = trade.stopLoss != null
+          ? trade.direction === 'BUY'
+            ? ((trade.stopLoss - currentPrice) / currentPrice) * 100
+            : ((currentPrice - trade.stopLoss) / currentPrice) * 100
+          : null;
+        const distToTP = trade.targetPrice != null
+          ? trade.direction === 'BUY'
+            ? ((trade.targetPrice - currentPrice) / currentPrice) * 100
+            : ((currentPrice - trade.targetPrice) / currentPrice) * 100
+          : null;
+
+        return { id: trade.id, symbol: trade.symbol, direction: trade.direction,
+          currentPrice, unrealizedPct, unrealizedUsdt, distToSL, distToTP };
+      }));
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Borrar todos los trades
   router.delete('/trades', async (_req: any, res: any) => {
     try {

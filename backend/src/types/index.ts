@@ -15,7 +15,7 @@ export interface Candle {
 export type Direction = 'BUY' | 'SELL';
 export type Bias = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
 
-export type StrategyName = 'SmartMoney' | 'VWAPMomentum' | 'Confluence' | 'DruLozano' | 'MarceMillo';
+export type StrategyName = 'SmartMoney' | 'VWAPMomentum' | 'Confluence' | 'DruLozano' | 'MarceMillo' | 'SaltandoDelLambo' | 'GatilloFacil' | 'ElTigre';
 
 export interface Signal {
   symbol: string;

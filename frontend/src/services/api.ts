@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { Candle, ClaudeUsage, Health, Signal, Stats, Trade } from '../types';
+import type { Candle, ClaudeUsage, Health, LivePnl, Signal, Stats, Trade } from '../types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -41,6 +41,10 @@ export const apiService = {
   },
   async setBotMode(offline: boolean): Promise<{ offline: boolean }> {
     const { data } = await api.post('/bot-mode', { offline });
+    return data;
+  },
+  async getLivePnl(): Promise<LivePnl[]> {
+    const { data } = await api.get<LivePnl[]>('/trades/live-pnl');
     return data;
   },
 };

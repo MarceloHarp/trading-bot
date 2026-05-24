@@ -147,7 +147,7 @@ export function buildIndicatorsRouter(getCandles: (symbol: string, interval: str
       const ma50arr  = sma(closes, 50);
       const ma100arr = sma(closes, 100);
       const ma150arr = sma(closes, 150);
-      const toMA = (arr) => arr.map((v,i) => ({time:times[i],value:v})).filter(p=>!isNaN(p.value));
+      const toMA = (arr: number[]) => arr.map((v,i) => ({time:times[i],value:v})).filter(p=>!isNaN(p.value));
 
       const bb = bollinger(closes, 20, 2);
       const vwapArr = vwapCalc(candles, 50);

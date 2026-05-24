@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ArrowLeft, Play, TrendingUp, TrendingDown, Target, BarChart3, AlertCircle, Loader2 } from 'lucide-react';
+import { useStore, ALL_STRATEGIES } from '../store';
 
 interface BacktestResult {
   symbol: string; interval: string; startDate: string; endDate: string; candles: number;
@@ -20,9 +21,14 @@ interface TradeLine {
   pnlPct: number | null; result: 'win' | 'loss' | 'open';
 }
 
-const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'BNBUSDT'];
+const SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'ADAUSDT', 'SOLUSDT', 'BNBUSDT', 'AVAXUSDT', 'LINKUSDT', 'XRPUSDT', 'DOGEUSDT', 'TRXUSDT'];
 const INTERVALS = ['1h', '4h', '1d'];
-const STRATEGIES = ['Confluence', 'VWAPMomentum', 'SmartMoney', 'DruLozano'];
+// Todas las estrategias disponibles para backtest (activas + desactivadas)
+const ALL_BACKTEST_STRATEGIES = [
+  ...ALL_STRATEGIES,
+  { id: 'DruLozano',   label: 'DruLozano',   color: '#6b7280', desc: 'Swing 4h (desactivada)' },
+  { id: 'Confluence',  label: 'Confluence',   color: '#6b7280', desc: 'Multi-indicador (desactivada)' },
+];
 
 function fmt(ts: number) {
   return new Date(ts).toLocaleDateString('es-AR', { day:'2-digit', month:'2-digit', year:'2-digit' });
@@ -62,13 +68,16 @@ function MiniEquityCurve({ curve, height = 60 }: { curve: { time: number; value:
 }
 
 export function BacktestPage({ onBack }: { onBack: () => void }) {
+  const { activeStrategies: storeStrategies } = useStore();
+
   const [symbol, setSymbol]       = useState('BTCUSDT');
-  const [interval, setInterval]   = useState('1h');
-  const [startDate, setStartDate] = useState('2025-01-01');
+  const [interval, setInterval]   = useState('4h');
+  const [startDate, setStartDate] = useState('2024-01-01');
   const [endDate, setEndDate]     = useState(new Date().toISOString().slice(0, 10));
-  const [strategies, setStrategies] = useState<string[]>(['Confluence', 'VWAPMomentum']);
+  // Inicializa con las estrategias activas del header
+  const [strategies, setStrategies] = useState<string[]>(storeStrategies);
   const [capital, setCapital]     = useState(10000);
-  const [riskPct, setRiskPct]     = useState(1);
+  const [riskPct, setRiskPct]     = useState(5);
   const [loading, setLoading]     = useState(false);
   const [result, setResult]       = useState<BacktestResult | null>(null);
   const [error, setError]         = useState<string | null>(null);
@@ -156,16 +165,42 @@ export function BacktestPage({ onBack }: { onBack: () => void }) {
           </div>
 
           <div>
-            <label className="text-xs text-gray-500 block mb-1">Estrategias</label>
-            <div className="space-y-1">
-              {STRATEGIES.map(s => (
-                <label key={s} className="flex items-center gap-2 cursor-pointer">
-                  <input type="checkbox" checked={strategies.includes(s)} onChange={() => toggleStrategy(s)}
-                    className="accent-blue-500" />
-                  <span className="text-sm">{s}</span>
-                </label>
-              ))}
+            <div className="flex items-center justify-between mb-2">
+              <label className="text-xs text-gray-500">Estrategias</label>
+              <div className="flex gap-1">
+                <button onClick={() => setStrategies(ALL_BACKTEST_STRATEGIES.map(s => s.id))}
+                  className="text-[10px] text-gray-500 hover:text-gray-300 px-1">Todas</button>
+                <span className="text-gray-700 text-[10px]">|</span>
+                <button onClick={() => setStrategies([])}
+                  className="text-[10px] text-gray-500 hover:text-gray-300 px-1">Ninguna</button>
+              </div>
             </div>
+            <div className="flex flex-wrap gap-1.5">
+              {ALL_BACKTEST_STRATEGIES.map(strat => {
+                const active = strategies.includes(strat.id);
+                const isLive = ALL_STRATEGIES.some(s => s.id === strat.id);
+                return (
+                  <button
+                    key={strat.id}
+                    onClick={() => toggleStrategy(strat.id)}
+                    title={strat.desc}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium border transition-all ${
+                      active
+                        ? 'border-transparent text-black'
+                        : 'border-gray-700 text-gray-500 hover:border-gray-500'
+                    } ${!isLive ? 'opacity-50' : ''}`}
+                    style={active ? { backgroundColor: strat.color } : {}}
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{ backgroundColor: active ? 'rgba(0,0,0,0.4)' : strat.color }} />
+                    {strat.label}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[10px] text-gray-600 mt-1.5">
+              {strategies.length === 0 ? '⚠ Selecciona al menos una' : `${strategies.length} seleccionada${strategies.length > 1 ? 's' : ''}`}
+            </p>
           </div>
 
           <div>

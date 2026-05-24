@@ -49,7 +49,7 @@ const INDS = [
   {key:'sma200',  label:'MA 200',   color:'#ef4444', width:2, dash:0, show:true,  group:'Dru'},
 ];
 
-export function Chart() {
+export function Chart({ height = 380, flexible = false }: { height?: number; flexible?: boolean }) {
   const { symbol, timeframe, botOffline } = useStore();
   const outerRef     = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -78,7 +78,7 @@ export function Chart() {
     const chart = createChart(el, {
       layout: { background: { type: ColorType.Solid, color: '#0a0e1a' }, textColor: '#9ca3af' },
       grid: { vertLines: { color: '#1a2236' }, horzLines: { color: '#1a2236' } },
-      width: w, height: 500,
+      width: w, height,
       timeScale: { timeVisible:true, secondsVisible:false, borderColor:'#1a2236', barSpacing:TF_SPACING[timeframe]??8, minBarSpacing:1, rightOffset:8 },
       rightPriceScale: { borderColor: '#1a2236' },
       crosshair: { mode: 1 },
@@ -129,16 +129,35 @@ export function Chart() {
       chartRef.current?.applyOptions({ width: nw });
     };
     window.addEventListener('resize', onResize);
+
+    // En modo flexible el canvas se adapta al contenedor via ResizeObserver
+    let ro: ResizeObserver | null = null;
+    if (flexible && el) {
+      ro = new ResizeObserver(entries => {
+        for (const entry of entries) {
+          const h = Math.floor(entry.contentRect.height);
+          if (h > 50) chartRef.current?.applyOptions({ height: h });
+        }
+      });
+      ro.observe(el);
+    }
+
     return () => {
       window.removeEventListener('resize', onResize);
+      ro?.disconnect();
       chart.remove();
       chartRef.current=null; candleRef.current=null; lineRefs.current={};
     };
-  }, []);
+  }, [flexible]);
 
   useEffect(() => {
     chartRef.current?.applyOptions({ timeScale: { barSpacing: TF_SPACING[timeframe]??8 } });
   }, [timeframe]);
+
+  // Redimensionar canvas cuando cambia la prop height
+  useEffect(() => {
+    chartRef.current?.applyOptions({ height });
+  }, [height]);
 
   useEffect(() => {
     for (const [k,v] of Object.entries(active)) lineRefs.current[k]?.applyOptions({ visible: v });
@@ -245,9 +264,9 @@ export function Chart() {
   const druInds = INDS.filter(i => i.group === 'Dru');
 
   return (
-    <div className='card' ref={outerRef}>
+    <div className={`card${flexible ? ' h-full flex flex-col' : ''}`} ref={outerRef}>
       {/* Header */}
-      <div className='card-header flex items-center gap-2 flex-wrap'>
+      <div className='card-header flex items-center gap-2 flex-wrap shrink-0'>
         <span className='font-semibold'>{symbol} · {timeframe}</span>
 
         <button onClick={() => setUseRealData(p=>!p)}
@@ -290,8 +309,8 @@ export function Chart() {
       </div>
 
       {/* Gráfico con popup de señal */}
-      <div className='relative'>
-        <div ref={containerRef} className='w-full' style={{height:'500px'}} />
+      <div className={`relative${flexible ? ' flex-1 min-h-0' : ''}`}>
+        <div ref={containerRef} className='w-full' style={flexible ? { height: '100%' } : { height: `${height}px` }} />
 
         {/* Popup de señal al hacer click en flecha */}
         {selectedSignal && popupPos && (

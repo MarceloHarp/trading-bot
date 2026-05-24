@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios from 'axios';
 import type { Candle } from '../types';
-import { sma, ema, atr, findSwings, adx, donchian } from '../core/indicators';
+import { sma, ema, atr, rsi as rsiInd, findSwings, adx, donchian } from '../core/indicators';
 
 const router = Router();
 
@@ -469,6 +469,177 @@ function runMarceMillo(candles: Candle[]): { idx: number; direction: 'BUY' | 'SE
   return signals;
 }
 
+// SaltandoDelLambo: RANGE / MEAN-REVERSION. Vende en techo, compra en piso
+// de un rango lateral (ADX bajo). SL apenas afuera del rango, TP al centro.
+function runSaltandoLambo(candles: Candle[]): { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] {
+  const closes = candles.map(c => c.close);
+  const atrArr = atr(candles, 14);
+  const adxArr = adx(candles, 14);
+  const rsiArr = rsi(closes, 14);
+  const don = donchian(candles, 48);
+  const signals: { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
+
+  // Config V2b (4h): SL ancho 1.8 ATR + RSI 38/62. Backtest 500d BTC PF 1.76, BNB PF 2.89.
+  const MAX_ADX = 25, MIN_W = 0.015, MAX_W = 0.18, EDGE = 0.22, SL_BUF = 1.8, RSI_OS = 38, RSI_OB = 62, MIN_RR = 0.6, GAP = 6;
+  let lastSigIdx = -GAP;
+
+  for (let i = 55; i < candles.length - 1; i++) {
+    if ([atrArr[i], adxArr[i], rsiArr[i], don.upper[i-1], don.lower[i-1]].some(isNaN)) continue;
+    if (i - lastSigIdx < GAP) continue;            // evita apilar trades en la misma zona
+
+    const last = candles[i];
+    const lastAtr = atrArr[i];
+    if (lastAtr <= 0) continue;
+    if (adxArr[i] >= MAX_ADX) continue;            // hay tendencia → no es rango
+
+    const rangeHi = don.upper[i-1];
+    const rangeLo = don.lower[i-1];
+    const width = rangeHi - rangeLo;
+    const widthPct = width / rangeLo;
+    if (widthPct < MIN_W || widthPct > MAX_W) continue;
+
+    const mid = (rangeHi + rangeLo) / 2;
+    const loZone = rangeLo + width * EDGE;
+    const hiZone = rangeHi - width * EDGE;
+
+    // LONG: rebote en el piso
+    const dippedFloor = last.low <= loZone && last.low >= rangeLo - lastAtr * 0.5;
+    if (dippedFloor && last.close > rangeLo && last.close > last.open && rsiArr[i] <= RSI_OS) {
+      const entry = last.close;
+      const sl = rangeLo - lastAtr * SL_BUF;
+      const risk = entry - sl;
+      if (risk > 0 && (mid - entry) / risk >= MIN_RR) {
+        signals.push({ idx: i, direction: 'BUY', entry, sl, tp: mid, strategy: 'SaltandoDelLambo' });
+        lastSigIdx = i;
+        continue;
+      }
+    }
+
+    // SHORT: rechazo en el techo
+    const spikedCeiling = last.high >= hiZone && last.high <= rangeHi + lastAtr * 0.5;
+    if (spikedCeiling && last.close < rangeHi && last.close < last.open && rsiArr[i] >= RSI_OB) {
+      const entry = last.close;
+      const sl = rangeHi + lastAtr * SL_BUF;
+      const risk = sl - entry;
+      if (risk > 0 && (entry - mid) / risk >= MIN_RR) {
+        signals.push({ idx: i, direction: 'SELL', entry, sl, tp: mid, strategy: 'SaltandoDelLambo' });
+        lastSigIdx = i;
+      }
+    }
+  }
+  return signals;
+}
+
+// GatilloFacil: BB FADE / MEAN-REVERSION en 4h.
+// Cuando la vela hace spike fuera de la BB y cierra de vuelta dentro con RSI extremo.
+// Backtest (exp-scalp3.js G0) — 500d 4h — BTC +53.6%, ETH +4.1%, BNB +13.7%.
+function runGatilloFacil(candles: Candle[]): { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] {
+  const closes = candles.map(c => c.close);
+  const atrArr = atr(candles, 14);
+  const rsiArr = rsi(closes, 14);
+  const bb = bollingerBands(closes, 20, 2.0);
+  const atrMa = sma(atrArr.map(v => isNaN(v) ? 0 : v), 20);
+  const signals: { idx: number; direction: 'BUY' | 'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
+
+  // Parámetros G0 (ganador del exp-scalp3.js): RSI40/60, TP=media BB, SL=0.5ATR bajo el wick
+  const RSI_OS = 40, RSI_OB = 60, SL_ATR = 0.5, MIN_RR = 0.35;
+
+  for (let i = 25; i < candles.length - 1; i++) {
+    if ([atrArr[i], rsiArr[i], bb.lower[i], bb.upper[i], bb.mid[i]].some(isNaN)) continue;
+    const last = candles[i];
+    const a = atrArr[i];
+    if (a <= 0) continue;
+    // Volatilidad mínima: ATR debe ser ≥ 80% del ATR medio (filtra velas planas)
+    if (!isNaN(atrMa[i]) && atrMa[i] > 0 && a < atrMa[i] * 0.8) continue;
+
+    const bbLo = bb.lower[i], bbHi = bb.upper[i], bbMid = bb.mid[i];
+
+    // LONG: mecha bajo banda inferior, cierra de vuelta dentro, vela alcista
+    if (last.low <= bbLo && last.close > bbLo && last.close > last.open && rsiArr[i] <= RSI_OS) {
+      const entry = last.close;
+      const sl = last.low - a * SL_ATR;
+      const risk = entry - sl;
+      if (risk > 0 && (bbMid - entry) / risk >= MIN_RR) {
+        signals.push({ idx: i, direction: 'BUY', entry, sl, tp: bbMid, strategy: 'GatilloFacil' });
+        continue;
+      }
+    }
+
+    // SHORT: mecha sobre banda superior, cierra de vuelta dentro, vela bajista
+    if (last.high >= bbHi && last.close < bbHi && last.close < last.open && rsiArr[i] >= RSI_OB) {
+      const entry = last.close;
+      const sl = last.high + a * SL_ATR;
+      const risk = sl - entry;
+      if (risk > 0 && (entry - bbMid) / risk >= MIN_RR) {
+        signals.push({ idx: i, direction: 'SELL', entry, sl, tp: bbMid, strategy: 'GatilloFacil' });
+      }
+    }
+  }
+  return signals;
+}
+
+// ElTigre: SWING PULLBACK 1D. Compra/vende el rebote en EMA20/EMA50 en tendencia.
+// Backtest ~3000d: ETH avg +3.48%/trade (→ +$10.4 con 3x lev $100), BNB +2.28%, AVAX +2.38%
+function runElTigre(candles: Candle[]): { idx: number; direction: 'BUY'|'SELL'; entry: number; sl: number; tp: number; strategy: string }[] {
+  const closes = candles.map(c => c.close);
+  const e20 = ema(closes, 20);
+  const e50 = ema(closes, 50);
+  const atrArr = atr(candles, 14);
+  const rsiArr = rsiInd(closes, 14);
+  const signals: { idx: number; direction: 'BUY'|'SELL'; entry: number; sl: number; tp: number; strategy: string }[] = [];
+
+  // BNB longs pierden sistemáticamente (6 pérdidas seguidas ene-2025). Solo shorts en BNB.
+  const symbol = candles[0]?.symbol ?? '';
+  const longBlocked = symbol === 'BNBUSDT';
+
+  const EMA_TOL  = 0.005;  // 0.5% arriba = "tocando"
+  const EMA_DEEP = 0.04;   // mecha puede ir 4% abajo
+  const SL_ATR   = 0.5;
+  const RR       = 3.0;
+  const MIN_BODY = 0.30;
+  const RSI_LO   = 38;
+  const RSI_HI   = 62;
+
+  for (let i = 60; i < candles.length - 1; i++) {
+    if ([e20[i], e50[i], atrArr[i], rsiArr[i]].some(isNaN)) continue;
+    const last = candles[i];
+    const a = atrArr[i]; if (a <= 0) continue;
+    const body = Math.abs(last.close - last.open);
+    const rng  = Math.max(last.high - last.low, 1e-9);
+    if (body / rng < MIN_BODY) continue;
+
+    // LONG: uptrend + pullback a EMA20 o EMA50 (BNB bloqueado para longs)
+    if (!longBlocked && e20[i] > e50[i]) {
+      const pb20 = last.low <= e20[i]*(1+EMA_TOL) && last.low >= e20[i]*(1-EMA_DEEP);
+      const pb50 = last.low <= e50[i]*(1+EMA_TOL) && last.low >= e50[i]*(1-EMA_DEEP);
+      const emaRef = pb50 ? e50[i] : e20[i];
+      if ((pb20||pb50) && last.close > emaRef && last.close > last.open
+          && rsiArr[i] >= RSI_LO && rsiArr[i] <= RSI_HI) {
+        const entry = last.close;
+        const sl = last.low - a * SL_ATR;
+        const risk = entry - sl;
+        if (risk > 0 && risk/entry < 0.15 && (entry+risk*RR-entry)/risk >= 2.5)
+          signals.push({ idx: i, direction: 'BUY', entry, sl, tp: entry+risk*RR, strategy: 'ElTigre' });
+      }
+    }
+    // SHORT: downtrend + rechazo en EMA20 o EMA50
+    if (e20[i] < e50[i]) {
+      const pb20d = last.high >= e20[i]*(1-EMA_TOL) && last.high <= e20[i]*(1+EMA_DEEP);
+      const pb50d = last.high >= e50[i]*(1-EMA_TOL) && last.high <= e50[i]*(1+EMA_DEEP);
+      const emaRef = pb50d ? e50[i] : e20[i];
+      if ((pb20d||pb50d) && last.close < emaRef && last.close < last.open
+          && rsiArr[i] >= (100-RSI_HI) && rsiArr[i] <= (100-RSI_LO)) {
+        const entry = last.close;
+        const sl = last.high + a * SL_ATR;
+        const risk = sl - entry;
+        if (risk > 0 && risk/entry < 0.15 && (entry-risk*RR)/entry >= 0)
+          signals.push({ idx: i, direction: 'SELL', entry, sl, tp: entry-risk*RR, strategy: 'ElTigre' });
+      }
+    }
+  }
+  return signals;
+}
+
 // ---- Función exportada para uso interno (backtest semanal) ----
 export async function runBacktestForService(
   symbol: string,
@@ -497,6 +668,9 @@ export async function runBacktestForService(
   if (strategies.includes('SmartMoney'))   allSignals.push(...runSmartMoney(candles));
   if (strategies.includes('DruLozano'))    allSignals.push(...runDruLozano(candles));
   if (strategies.includes('MarceMillo'))   allSignals.push(...runMarceMillo(candles));
+  if (strategies.includes('SaltandoDelLambo')) allSignals.push(...runSaltandoLambo(candles));
+  if (strategies.includes('GatilloFacil'))    allSignals.push(...runGatilloFacil(candles));
+  if (strategies.includes('ElTigre'))         allSignals.push(...runElTigre(candles));
   allSignals.sort((a, b) => a.idx - b.idx);
 
   const trades = simulateTrades(candles, allSignals, 1);
@@ -547,6 +721,9 @@ router.post('/run', async (req: any, res: any) => {
     if (strategies.includes('SmartMoney'))   allSignals.push(...runSmartMoney(candles));
     if (strategies.includes('DruLozano'))    allSignals.push(...runDruLozano(candles));
     if (strategies.includes('MarceMillo'))   allSignals.push(...runMarceMillo(candles));
+    if (strategies.includes('SaltandoDelLambo')) allSignals.push(...runSaltandoLambo(candles));
+    if (strategies.includes('GatilloFacil'))    allSignals.push(...runGatilloFacil(candles));
+    if (strategies.includes('ElTigre'))         allSignals.push(...runElTigre(candles));
 
     // Ordenar por idx
     allSignals.sort((a, b) => a.idx - b.idx);
