@@ -18,6 +18,47 @@ import { SaltandoDelLamboStrategy } from './strategies/SaltandoDelLambo';
 import { GatilloFacilStrategy } from './strategies/GatilloFacil';
 import { ElTigreStrategy } from './strategies/ElTigre';
 
+/**
+ * Restricciones por estrategia basadas en backtest 1 año (Mayo 2025–2026).
+ * allowedTimeframes: TFs donde la estrategia tiene PF > 1 consistentemente.
+ * allowedSymbols[tf]: si se especifica, SOLO esos símbolos en ese TF.
+ * blockedSymbols[tf]: si se especifica, EXCLUIR esos símbolos en ese TF.
+ */
+const STRATEGY_CONSTRAINTS: Record<string, {
+  allowedTimeframes: string[];
+  allowedSymbols?: Record<string, string[]>;
+  blockedSymbols?: Record<string, string[]>;
+}> = {
+  // ElTigre: rentable en 1h/4h todos; en 1d SOLO AVAX+SOL (PF 3.12 y 1.21)
+  ElTigre: {
+    allowedTimeframes: ['1h', '4h', '1d'],
+    allowedSymbols: { '1d': ['AVAXUSDT', 'SOLUSDT'] },
+  },
+  // GatilloFacil: PF ~1 en 1h (marginal) → solo 4h
+  GatilloFacil: {
+    allowedTimeframes: ['4h'],
+  },
+  // MarceMillo: solo SOL 1h (PF 1.33); pierde en 4h y en otros pares
+  MarceMillo: {
+    allowedTimeframes: ['1h'],
+    allowedSymbols: { '1h': ['SOLUSDT'] },
+  },
+  // SaltandoDelLambo: 1h solo SOL/BNB/BTC (PF>1); 4h todos; 1d sin trades
+  SaltandoDelLambo: {
+    allowedTimeframes: ['1h', '4h'],
+    allowedSymbols: { '1h': ['SOLUSDT', 'BNBUSDT', 'BTCUSDT'] },
+  },
+  // SmartMoney: el mejor global — 1h y 4h en todos; pierde en 1d
+  SmartMoney: {
+    allowedTimeframes: ['1h', '4h'],
+  },
+  // VWAPMomentum: AVAX 1h PF 0.92 (pierde) → bloqueado; 4h todos ok
+  VWAPMomentum: {
+    allowedTimeframes: ['1h', '4h'],
+    blockedSymbols: { '1h': ['AVAXUSDT'] },
+  },
+};
+
 export class StrategyEngine {
   private readonly strategies: Strategy[];
   private readonly executor: OrderExecutor;
@@ -198,6 +239,30 @@ export class StrategyEngine {
     return this.marketRegime;
   }
 
+  /**
+   * Verifica si una estrategia tiene permiso para correr en un símbolo+timeframe dado.
+   * Basado en STRATEGY_CONSTRAINTS arriba, derivado del backtest 1 año.
+   */
+  private isStrategyAllowed(strategyName: string, symbol: string, timeframe: string): boolean {
+    const c = STRATEGY_CONSTRAINTS[strategyName];
+    if (!c) return true; // sin restricción → permitir
+
+    // 1) Verificar que el timeframe esté en la lista permitida
+    if (!c.allowedTimeframes.includes(timeframe)) return false;
+
+    // 2) Whitelist de símbolos para este TF
+    if (c.allowedSymbols?.[timeframe]) {
+      if (!c.allowedSymbols[timeframe].includes(symbol)) return false;
+    }
+
+    // 3) Blacklist de símbolos para este TF
+    if (c.blockedSymbols?.[timeframe]) {
+      if (c.blockedSymbols[timeframe].includes(symbol)) return false;
+    }
+
+    return true;
+  }
+
   private async tick() {
     if (!this.running) return;
     // Guard: si el tick anterior no terminó, saltear este para evitar señales duplicadas
@@ -241,6 +306,8 @@ export class StrategyEngine {
         const candles = candleMap.get(timeframe);
         if (!candles) continue;
         for (const strategy of this.strategies) {
+          // Filtro por restricciones de backtest (símbolo + timeframe permitidos)
+          if (!this.isStrategyAllowed(strategy.name, symbol, timeframe)) continue;
           const key = this.cooldownKey(symbol, timeframe, strategy.name);
           if (this.inCooldown(key, timeframe)) continue;
           if (await this.checkLimits()) continue;
