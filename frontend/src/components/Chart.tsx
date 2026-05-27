@@ -67,12 +67,11 @@ export function Chart({ height = 380, flexible = false }: { height?: number; fle
   const [popupPos, setPopupPos]     = useState<{x:number;y:number} | null>(null);
   const signalsRef = useRef<SignalMarker[]>([]);
 
-  // Crear chart
+  // Crear chart UNA SOLA VEZ al montar
   useEffect(() => {
     const el = containerRef.current;
     const outer = outerRef.current;
     if (!el || !outer) return;
-    if (chartRef.current) { chartRef.current.remove(); chartRef.current=null; candleRef.current=null; lineRefs.current={}; }
 
     const w = Math.max(300, outer.getBoundingClientRect().width || 780);
     const chart = createChart(el, {
@@ -105,13 +104,12 @@ export function Chart({ height = 380, flexible = false }: { height?: number; fle
     // Click en el chart para detectar flechas de señales
     chart.subscribeClick((param) => {
       if (!param.time || !param.point) return;
-      const clickTime = Number(param.time); // ya viene redondeado al inicio de la vela
+      const clickTime = Number(param.time);
       const clickPrice = param.seriesData.get(candles);
       if (!clickPrice) return;
 
-      // Buscar si hay un signal cuyo timestamp redondeado coincide con la vela clickeada
       const sig = signalsRef.current.find(s => {
-        const tfSec2 = 3600; // aproximacion, el redondeo exacto esta en el marker
+        const tfSec2 = 3600;
         const sRounded = Math.floor(s.time / 1000 / tfSec2) * tfSec2;
         return Math.abs(sRounded - clickTime) < tfSec2;
       });
@@ -130,34 +128,38 @@ export function Chart({ height = 380, flexible = false }: { height?: number; fle
     };
     window.addEventListener('resize', onResize);
 
-    // En modo flexible el canvas se adapta al contenedor via ResizeObserver
-    let ro: ResizeObserver | null = null;
-    if (flexible && el) {
-      ro = new ResizeObserver(entries => {
-        for (const entry of entries) {
-          const h = Math.floor(entry.contentRect.height);
-          if (h > 50) chartRef.current?.applyOptions({ height: h });
-        }
-      });
-      ro.observe(el);
-    }
-
     return () => {
       window.removeEventListener('resize', onResize);
-      ro?.disconnect();
       chart.remove();
       chartRef.current=null; candleRef.current=null; lineRefs.current={};
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ResizeObserver separado — se activa/desactiva cuando cambia flexible
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!flexible || !el) return;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const h = Math.floor(entry.contentRect.height);
+        if (h > 50) chartRef.current?.applyOptions({ height: h });
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
   }, [flexible]);
 
   useEffect(() => {
     chartRef.current?.applyOptions({ timeScale: { barSpacing: TF_SPACING[timeframe]??8 } });
   }, [timeframe]);
 
-  // Redimensionar canvas cuando cambia la prop height
+  // Aplicar height cuando cambia la prop o cuando se vuelve al modo normal (flexible→false)
   useEffect(() => {
-    chartRef.current?.applyOptions({ height });
-  }, [height]);
+    if (!flexible) {
+      chartRef.current?.applyOptions({ height });
+    }
+  }, [height, flexible]);
 
   useEffect(() => {
     for (const [k,v] of Object.entries(active)) lineRefs.current[k]?.applyOptions({ visible: v });

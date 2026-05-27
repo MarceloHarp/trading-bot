@@ -19,43 +19,59 @@ import { GatilloFacilStrategy } from './strategies/GatilloFacil';
 import { ElTigreStrategy } from './strategies/ElTigre';
 
 /**
- * Restricciones por estrategia basadas en backtest 1 año (Mayo 2025–2026).
+ * Restricciones por estrategia basadas en backtest 30d (27 Abr–27 May 2026).
  * allowedTimeframes: TFs donde la estrategia tiene PF > 1 consistentemente.
  * allowedSymbols[tf]: si se especifica, SOLO esos símbolos en ese TF.
  * blockedSymbols[tf]: si se especifica, EXCLUIR esos símbolos en ese TF.
+ *
+ * Backtest 30d resultados relevantes:
+ *   MarceMillo SOL 1H PF 4.98 ⭐ | SmartMoney ETH/SOL 4H PF 3.65/2.20
+ *   GatilloFacil SOL 4H PF 2.84 | GatilloFacil BNB 4H PF 1.67
+ *   AVAX: lastre en todos los pares/TFs este período (mercado tendencial)
+ *   SaltandoDelLambo: solo funciona en mercado lateral — suspendido temporalmente
+ *   ElTigre 1D: 9/9 pérdidas en mercado alcista fuerte (bull run Mayo 2026)
+ *   VWAPMomentum SOL 1H PF 0.71 — bloqueado (MarceMillo es superior ahí)
  */
 const STRATEGY_CONSTRAINTS: Record<string, {
   allowedTimeframes: string[];
   allowedSymbols?: Record<string, string[]>;
   blockedSymbols?: Record<string, string[]>;
 }> = {
-  // ElTigre: rentable en 1h/4h todos; en 1d SOLO AVAX+SOL (PF 3.12 y 1.21)
+  // ElTigre: 1D solo SOL (mejor en tendencia). AVAX/ETH/BNB en 1D bloqueados
+  // este período. En bull run extremo, ElTigre 1D tiende a acumular pérdidas
+  // porque no hay pullbacks. Se mantiene solo SOL por ser el más consistente.
   ElTigre: {
-    allowedTimeframes: ['1h', '4h', '1d'],
-    allowedSymbols: { '1d': ['AVAXUSDT', 'SOLUSDT'] },
+    allowedTimeframes: ['1d'],
+    allowedSymbols: { '1d': ['SOLUSDT'] },
   },
-  // GatilloFacil: PF ~1 en 1h (marginal) → solo 4h
+  // GatilloFacil: solo 4H; AVAX 4H bloqueado (PF 0.57 en 30d)
   GatilloFacil: {
     allowedTimeframes: ['4h'],
+    blockedSymbols: { '4h': ['AVAXUSDT'] },
   },
-  // MarceMillo: solo SOL 1h (PF 1.33); pierde en 4h y en otros pares
+  // MarceMillo: solo SOL 1h (PF 4.98 en 30d — la mejor estrategia del mes)
   MarceMillo: {
     allowedTimeframes: ['1h'],
     allowedSymbols: { '1h': ['SOLUSDT'] },
   },
-  // SaltandoDelLambo: 1h solo SOL/BNB/BTC (PF>1); 4h todos; 1d sin trades
+  // SaltandoDelLambo: temporalmente suspendida — requiere mercado lateral (ADX bajo)
+  // En Mayo 2026 (bull run fuerte) generó 0W/3L. Bloqueada en AVAX que fue peor.
+  // Solo habilitada en SOL/BNB/ETH 4H donde hay rangos más frecuentes.
   SaltandoDelLambo: {
-    allowedTimeframes: ['1h', '4h'],
-    allowedSymbols: { '1h': ['SOLUSDT', 'BNBUSDT', 'BTCUSDT'] },
+    allowedTimeframes: ['4h'],
+    blockedSymbols: { '4h': ['AVAXUSDT'] },
   },
-  // SmartMoney: el mejor global — 1h y 4h en todos; pierde en 1d
+  // SmartMoney: ETH 4H (PF 3.65) y SOL 4H (PF 2.20) son los ganadores.
+  // AVAX bloqueado en todos los TFs (PF 0.00 en 30d).
   SmartMoney: {
-    allowedTimeframes: ['1h', '4h'],
+    allowedTimeframes: ['4h'],
+    blockedSymbols: { '4h': ['AVAXUSDT'] },
   },
-  // VWAPMomentum: AVAX 1h PF 0.92 (pierde) → bloqueado; 4h todos ok
+  // VWAPMomentum: ETH 1H (PF 1.07) y BNB 1H (PF 1.20) ok.
+  // AVAX 1H bloqueado (PF 0.92). SOL 1H bloqueado (PF 0.71 — MarceMillo es superior).
   VWAPMomentum: {
-    allowedTimeframes: ['1h', '4h'],
-    blockedSymbols: { '1h': ['AVAXUSDT'] },
+    allowedTimeframes: ['1h'],
+    blockedSymbols: { '1h': ['AVAXUSDT', 'SOLUSDT'] },
   },
 };
 

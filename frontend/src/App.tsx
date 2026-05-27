@@ -73,37 +73,29 @@ export default function App() {
             <StatsPanel />
           </div>
 
-          {tradesCollapsed ? (
-            // ── Modo gráfico expandido: Chart flex-1, se auto-adapta al espacio disponible ──
-            <>
-              <div className='flex-1 min-h-0'>
-                <Chart flexible />
-              </div>
-              <div className='shrink-0'>
-                <TradesPanel collapsed onToggleCollapse={toggleTradesCollapse} />
-              </div>
-            </>
-          ) : (
-            // ── Modo normal: Chart con altura draggable, Trades ocupa el resto ──
-            <>
-              <div className='shrink-0'>
-                <Chart height={chartHeight} />
-              </div>
-              <div
-                className='shrink-0 h-3 flex items-center justify-center cursor-ns-resize group select-none'
-                onMouseDown={(e) => {
-                  dragRef.current = { startY: e.clientY, startH: chartHeight };
-                  e.preventDefault();
-                }}
-                title='Arrastrá para redimensionar el gráfico'
-              >
-                <div className='w-24 h-1 rounded-full bg-gray-700 group-hover:bg-accent-blue transition-colors' />
-              </div>
-              <div className='flex-1 min-h-0 overflow-hidden'>
-                <TradesPanel onToggleCollapse={toggleTradesCollapse} />
-              </div>
-            </>
+          {/* Chart siempre montado — solo cambia wrapper y props para no perder estado */}
+          <div className={tradesCollapsed ? 'flex-1 min-h-0' : 'shrink-0'}>
+            <Chart height={chartHeight} flexible={tradesCollapsed} />
+          </div>
+
+          {/* Drag handle — solo visible en modo normal */}
+          {!tradesCollapsed && (
+            <div
+              className='shrink-0 h-3 flex items-center justify-center cursor-ns-resize group select-none'
+              onMouseDown={(e) => {
+                dragRef.current = { startY: e.clientY, startH: chartHeight };
+                e.preventDefault();
+              }}
+              title='Arrastrá para redimensionar el gráfico'
+            >
+              <div className='w-24 h-1 rounded-full bg-gray-700 group-hover:bg-accent-blue transition-colors' />
+            </div>
           )}
+
+          {/* Trades — siempre montado, colapsado o no */}
+          <div className={tradesCollapsed ? 'shrink-0' : 'flex-1 min-h-0 overflow-hidden'}>
+            <TradesPanel collapsed={tradesCollapsed} onToggleCollapse={toggleTradesCollapse} />
+          </div>
         </section>
 
         {/*
