@@ -50,6 +50,7 @@ export class OrderExecutor {
         stopLoss: signal.stopLoss,
         targetPrice: signal.targetPrice,
         status: 'open',
+        strategy: signal.strategy ?? null,
       },
     });
     await prisma.signal.update({ where: { id: signal.signalId }, data: { status: 'executed' } });

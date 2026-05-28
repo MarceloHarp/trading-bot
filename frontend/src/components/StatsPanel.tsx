@@ -1,9 +1,19 @@
-import { Clock, DollarSign, Gauge, Percent, Target, TrendingUp } from 'lucide-react';
+import { Clock, DollarSign, Gauge, Percent, Target, TrendingUp, Zap } from 'lucide-react';
 import { useStore } from '../store';
 
 export function StatsPanel() {
   const stats = useStore((s) => s.stats);
+  const trades = useStore((s) => s.trades);
   const rl = stats?.rateLimit;
+
+  // GridBot stats
+  const gridTrades = trades.filter(t => t.strategy === 'GridBot');
+  const gridOpen = gridTrades.filter(t => t.status === 'open').length;
+  const gridClosed = gridTrades.filter(t => t.status === 'closed');
+  const gridPnl = gridClosed.reduce((sum, t) => sum + (t.pnl ?? 0), 0);
+  const gridWins = gridClosed.filter(t => (t.pnl ?? 0) > 0).length;
+  const gridWinRate = gridClosed.length > 0 ? (gridWins / gridClosed.length) * 100 : 0;
+
   return (
     <div className='card'>
       <div className='card-header'>Performance</div>
@@ -30,6 +40,40 @@ export function StatsPanel() {
               {rl.isLimited && <div className='text-[10px] text-accent-yellow font-medium'>Bot pausado</div>}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ── GridBot section ── */}
+      <div className='mt-3 rounded p-3' style={{ backgroundColor: '#92400e18', border: '1px solid #d9770630' }}>
+        <div className='flex items-center gap-1.5 mb-2 text-xs font-medium' style={{ color: '#fbbf24' }}>
+          <Zap className='w-3.5 h-3.5' />
+          GridBot ETHUSDT — $1,800–$2,400 | 12 niveles | $50 spacing
+        </div>
+        <div className='grid grid-cols-2 md:grid-cols-4 gap-2'>
+          <div className='rounded p-2' style={{ backgroundColor: '#92400e22' }}>
+            <div className='text-[11px] text-amber-600/80'>PnL Grid</div>
+            <div className={'text-sm font-semibold font-mono ' + (gridPnl >= 0 ? 'text-accent-green' : 'text-accent-red')}>
+              {gridPnl >= 0 ? '+' : ''}{gridPnl.toFixed(2)} USDT
+            </div>
+          </div>
+          <div className='rounded p-2' style={{ backgroundColor: '#92400e22' }}>
+            <div className='text-[11px] text-amber-600/80'>Ciclos</div>
+            <div className='text-sm font-semibold font-mono text-amber-300'>
+              {gridClosed.length} cerrados / {gridOpen} abiertos
+            </div>
+          </div>
+          <div className='rounded p-2' style={{ backgroundColor: '#92400e22' }}>
+            <div className='text-[11px] text-amber-600/80'>Win Rate Grid</div>
+            <div className='text-sm font-semibold font-mono text-amber-300'>
+              {gridWinRate.toFixed(1)}%
+            </div>
+          </div>
+          <div className='rounded p-2' style={{ backgroundColor: '#92400e22' }}>
+            <div className='text-[11px] text-amber-600/80'>Niveles activos</div>
+            <div className='text-sm font-semibold font-mono text-amber-300'>
+              {gridOpen} / 12
+            </div>
+          </div>
         </div>
       </div>
     </div>

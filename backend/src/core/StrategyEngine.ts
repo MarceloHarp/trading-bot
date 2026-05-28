@@ -17,6 +17,7 @@ import { MarceMilloStrategy } from './strategies/MarceMillo';
 import { SaltandoDelLamboStrategy } from './strategies/SaltandoDelLambo';
 import { GatilloFacilStrategy } from './strategies/GatilloFacil';
 import { ElTigreStrategy } from './strategies/ElTigre';
+import { GridBotStrategy } from './strategies/GridBot';
 
 /**
  * Restricciones por estrategia basadas en backtest 30d (27 Abr–27 May 2026).
@@ -73,6 +74,10 @@ const STRATEGY_CONSTRAINTS: Record<string, {
     allowedTimeframes: ['1h'],
     blockedSymbols: { '1h': ['AVAXUSDT', 'SOLUSDT'] },
   },
+  // GridBot: handled by dedicated tickGridBot() — excluded from normal loop
+  GridBot: {
+    allowedTimeframes: [], // never runs via normal loop
+  },
 };
 
 export class StrategyEngine {
@@ -102,6 +107,7 @@ export class StrategyEngine {
       new SaltandoDelLamboStrategy(),   // range/mean-reversion Donchian, solo 4h (BTC/BNB)
       new GatilloFacilStrategy(),       // BB fade mean-reversion, solo 4h (ETH/BNB/AVAX) — más trades
       new ElTigreStrategy(),            // Swing pullback EMA, solo 1d (ETH/BNB/AVAX) — $10/trade
+      new GridBotStrategy(),            // Grid trading ETHUSDT $1800-$2400, 12 niveles, via tickGridBot()
       // new ConfluenceStrategy(),  // DEACTIVATED: -0.05% PnL, 22.0% WR (28d backtest)
       // new DruLozanoStrategy(),   // DEACTIVATED: -0.03% PnL, 23.7% WR (28d backtest)
     ];
@@ -360,6 +366,7 @@ export class StrategyEngine {
         }
       }
     }
+    await this.tickGridBot();
   }
 
   private async handleSignal(signal: Signal) {
@@ -404,6 +411,79 @@ export class StrategyEngine {
       if (result) this.io.emit('trade', result.trade);
     } catch (err) {
       logger.error('executeSignal error: ' + (err as Error).message);
+    }
+  }
+
+  /**
+   * Grid Bot tick — runs every engine cycle alongside normal strategies.
+   * Checks each ETHUSDT grid level and opens a trade when:
+   *  1. Price is within TOLERANCE of a level
+   *  2. That level has no open GridBot trade
+   * Bypasses regime filter, cooldowns, and global rate limits intentionally.
+   */
+  private async tickGridBot() {
+    try {
+      const price = await this.exchange.getPrice(GridBotStrategy.SYMBOL);
+
+      // Load open GridBot trades to know which levels are occupied
+      const openGridTrades = await prisma.trade.findMany({
+        where: { status: 'open', strategy: 'GridBot' },
+        select: { entryPrice: true },
+      });
+
+      // Map each open trade to the nearest grid level
+      const occupiedLevels = new Set<number>(
+        openGridTrades.map(t => {
+          return GridBotStrategy.LEVELS.reduce((closest, lvl) =>
+            Math.abs(lvl - t.entryPrice) < Math.abs(closest - t.entryPrice) ? lvl : closest
+          );
+        })
+      );
+
+      // Enforce max 12 open GridBot trades (one per level)
+      if (occupiedLevels.size >= GridBotStrategy.NUM_GRIDS) return;
+
+      for (const level of GridBotStrategy.LEVELS) {
+        if (occupiedLevels.has(level)) continue;
+        const dist = Math.abs(price - level) / level;
+        if (dist > GridBotStrategy.TOLERANCE) continue;
+
+        // Direction: BUY at lower levels, SELL at upper levels
+        const direction: 'BUY' | 'SELL' = price <= level ? 'SELL' : 'BUY';
+
+        // BUY: TP = level + spacing, SL = level - 2*spacing
+        // SELL: TP = level - spacing, SL = level + 2*spacing
+        const tp = direction === 'BUY'
+          ? level + GridBotStrategy.SPACING
+          : level - GridBotStrategy.SPACING;
+        const sl = direction === 'BUY'
+          ? level - GridBotStrategy.SPACING * 2
+          : level + GridBotStrategy.SPACING * 2;
+
+        // Guard: tp/sl must be within grid bounds
+        if (tp > GridBotStrategy.UPPER || tp < GridBotStrategy.LOWER) continue;
+        if (sl < GridBotStrategy.LOWER * 0.95 || sl > GridBotStrategy.UPPER * 1.05) continue;
+
+        const levelIdx = GridBotStrategy.LEVELS.indexOf(level);
+        const signal: Signal = {
+          symbol: GridBotStrategy.SYMBOL,
+          timeframe: '1h',
+          direction,
+          strategy: 'GridBot',
+          entryPrice: price,
+          stopLoss: sl,
+          targetPrice: tp,
+          confidence: 0.85,
+          reason: `GridBot nivel ${levelIdx + 1}/13 @ $${level} | Rango $${GridBotStrategy.LOWER}–$${GridBotStrategy.UPPER} | Spacing $${GridBotStrategy.SPACING}`,
+          meta: { gridLevel: level, levelIndex: levelIdx, gridLower: GridBotStrategy.LOWER, gridUpper: GridBotStrategy.UPPER },
+        };
+
+        logger.info(`[GridBot] ${direction} nivel $${level} (precio $${price.toFixed(2)}) tp=$${tp} sl=$${sl}`);
+        await this.handleSignal(signal);
+        break; // One signal per tick to avoid flooding
+      }
+    } catch (err) {
+      logger.warn('[GridBot] tickGridBot error: ' + (err as Error).message);
     }
   }
 

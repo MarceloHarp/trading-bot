@@ -66,6 +66,7 @@ model Trade {
   pnlPercent  Float?
   status      String    @default("open") // open | closed | cancelled
   closedReason String?  // target | stop | manual | timeout
+  strategy    String?
   openedAt    DateTime  @default(now())
   closedAt    DateTime?
 

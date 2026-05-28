@@ -8,6 +8,7 @@ import type { Trade, LivePnl } from '../types';
 type SortField = 'time' | 'pnl' | 'symbol' | 'direction';
 type SortDir   = 'asc' | 'desc';
 type Filter    = 'all' | 'open' | 'closed';
+type StrategyFilter = 'all' | 'grid' | 'regular';
 type ArchiveFilter = 'all' | 'win' | 'loss';
 type ArchiveSortField = 'date' | 'pnl';
 
@@ -44,9 +45,10 @@ export function TradesPanel({
   const { trades, refreshAll, setSelectedSignalId } = useStore();
 
   // sort / filter — main table
-  const [sortField, setSortField] = useState<SortField>('time');
-  const [sortDir,   setSortDir]   = useState<SortDir>('desc');
-  const [filter,    setFilter]    = useState<Filter>('all');
+  const [sortField,   setSortField]   = useState<SortField>('time');
+  const [sortDir,     setSortDir]     = useState<SortDir>('desc');
+  const [filter,      setFilter]      = useState<Filter>('all');
+  const [stratFilter, setStratFilter] = useState<StrategyFilter>('all');
 
   // bulk actions
   const [selected,  setSelected]  = useState<Set<string>>(new Set());
@@ -84,12 +86,17 @@ export function TradesPanel({
     else { setSortField(field); setSortDir('desc'); }
   };
 
-  const applySortFilter = (list: Trade[], sf: SortField, sd: SortDir, f: Filter) =>
+  const applySortFilter = (list: Trade[], sf: SortField, sd: SortDir, f: Filter, sf2: StrategyFilter) =>
     [...list]
       .filter(t => {
         if (archived.has(t.id)) return false;       // ocultar archivados del main
         if (f === 'open')   return t.status === 'open';
         if (f === 'closed') return t.status === 'closed';
+        return true;
+      })
+      .filter(t => {
+        if (sf2 === 'grid')    return t.strategy === 'GridBot';
+        if (sf2 === 'regular') return t.strategy !== 'GridBot';
         return true;
       })
       .sort((a, b) => {
@@ -103,7 +110,7 @@ export function TradesPanel({
         return 0;
       });
 
-  const sorted = applySortFilter(trades, sortField, sortDir, filter);
+  const sorted = applySortFilter(trades, sortField, sortDir, filter, stratFilter);
 
   /* archive helpers */
   const archiveTrades = (ids: Set<string>) => {
@@ -208,6 +215,31 @@ export function TradesPanel({
               {f === 'all' ? `Todo (${sorted.length})` : f === 'open' ? `Abiertos (${openCount})` : `Cerrados (${closedCount})`}
             </button>
           ))}
+        </div>
+
+        {/* Strategy filter buttons */}
+        <div className='flex items-center gap-1 ml-1'>
+          <button onClick={() => setStratFilter('all')}
+            className='px-2 py-0.5 rounded text-[11px] font-medium border transition-all'
+            style={stratFilter === 'all'
+              ? { backgroundColor: '#6b728022', borderColor: '#6b7280', color: '#d1d5db' }
+              : { borderColor: '#374151', color: '#6b7280', backgroundColor: 'transparent' }}>
+            All
+          </button>
+          <button onClick={() => setStratFilter('grid')}
+            className='px-2 py-0.5 rounded text-[11px] font-medium border transition-all'
+            style={stratFilter === 'grid'
+              ? { backgroundColor: '#d9770620', borderColor: '#f59e0b', color: '#fbbf24' }
+              : { borderColor: '#374151', color: '#6b7280', backgroundColor: 'transparent' }}>
+            Grid ⚡
+          </button>
+          <button onClick={() => setStratFilter('regular')}
+            className='px-2 py-0.5 rounded text-[11px] font-medium border transition-all'
+            style={stratFilter === 'regular'
+              ? { backgroundColor: '#6b728022', borderColor: '#6b7280', color: '#d1d5db' }
+              : { borderColor: '#374151', color: '#6b7280', backgroundColor: 'transparent' }}>
+            Estrategias
+          </button>
         </div>
 
         <div className='ml-auto flex items-center gap-2 flex-wrap'>
