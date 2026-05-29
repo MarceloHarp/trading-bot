@@ -417,13 +417,19 @@ export class StrategyEngine {
   /**
    * Grid Bot tick — runs every engine cycle alongside normal strategies.
    * Checks each ETHUSDT grid level and opens a trade when:
-   *  1. Price is within TOLERANCE of a level
+   *  1. Price is within SPACING/2 of a level (zone-based, not tight %-tolerance)
    *  2. That level has no open GridBot trade
-   * Bypasses regime filter, cooldowns, and global rate limits intentionally.
+   * Zone: cada nivel "posee" ±SPACING/2 alrededor suyo.
+   * Con spacing=$50 → cada zona mide $25 a cada lado.
+   * Ejemplo: nivel $2000 activa entre $1975 y $2025.
+   * Bypasses regime filter, cooldowns, y rate limits — tiene su propia lógica.
    */
   private async tickGridBot() {
     try {
       const price = await this.exchange.getPrice(GridBotStrategy.SYMBOL);
+
+      // Fuera del rango del grid → no hacer nada
+      if (price < GridBotStrategy.LOWER || price > GridBotStrategy.UPPER) return;
 
       // Load open GridBot trades to know which levels are occupied
       const openGridTrades = await prisma.trade.findMany({
@@ -433,55 +439,66 @@ export class StrategyEngine {
 
       // Map each open trade to the nearest grid level
       const occupiedLevels = new Set<number>(
-        openGridTrades.map(t => {
-          return GridBotStrategy.LEVELS.reduce((closest, lvl) =>
+        openGridTrades.map(t =>
+          GridBotStrategy.LEVELS.reduce((closest, lvl) =>
             Math.abs(lvl - t.entryPrice) < Math.abs(closest - t.entryPrice) ? lvl : closest
-          );
-        })
+          )
+        )
       );
 
       // Enforce max 12 open GridBot trades (one per level)
       if (occupiedLevels.size >= GridBotStrategy.NUM_GRIDS) return;
 
+      // Zone = SPACING/2 ($25). El precio activa el nivel más cercano no ocupado.
+      // BUY  para niveles en o por debajo del precio (acumulamos en soportes)
+      // SELL para niveles por encima del precio (vendemos en resistencias)
+      const halfSpacing = GridBotStrategy.SPACING / 2;
+
+      // Encontrar el nivel no ocupado más cercano al precio actual
+      let bestLevel: number | null = null;
+      let bestDist = Infinity;
       for (const level of GridBotStrategy.LEVELS) {
         if (occupiedLevels.has(level)) continue;
-        const dist = Math.abs(price - level) / level;
-        if (dist > GridBotStrategy.TOLERANCE) continue;
-
-        // Direction: BUY at lower levels, SELL at upper levels
-        const direction: 'BUY' | 'SELL' = price <= level ? 'SELL' : 'BUY';
-
-        // BUY: TP = level + spacing, SL = level - 2*spacing
-        // SELL: TP = level - spacing, SL = level + 2*spacing
-        const tp = direction === 'BUY'
-          ? level + GridBotStrategy.SPACING
-          : level - GridBotStrategy.SPACING;
-        const sl = direction === 'BUY'
-          ? level - GridBotStrategy.SPACING * 2
-          : level + GridBotStrategy.SPACING * 2;
-
-        // Guard: tp/sl must be within grid bounds
-        if (tp > GridBotStrategy.UPPER || tp < GridBotStrategy.LOWER) continue;
-        if (sl < GridBotStrategy.LOWER * 0.95 || sl > GridBotStrategy.UPPER * 1.05) continue;
-
-        const levelIdx = GridBotStrategy.LEVELS.indexOf(level);
-        const signal: Signal = {
-          symbol: GridBotStrategy.SYMBOL,
-          timeframe: '1h',
-          direction,
-          strategy: 'GridBot',
-          entryPrice: price,
-          stopLoss: sl,
-          targetPrice: tp,
-          confidence: 0.85,
-          reason: `GridBot nivel ${levelIdx + 1}/13 @ $${level} | Rango $${GridBotStrategy.LOWER}–$${GridBotStrategy.UPPER} | Spacing $${GridBotStrategy.SPACING}`,
-          meta: { gridLevel: level, levelIndex: levelIdx, gridLower: GridBotStrategy.LOWER, gridUpper: GridBotStrategy.UPPER },
-        };
-
-        logger.info(`[GridBot] ${direction} nivel $${level} (precio $${price.toFixed(2)}) tp=$${tp} sl=$${sl}`);
-        await this.handleSignal(signal);
-        break; // One signal per tick to avoid flooding
+        const dist = Math.abs(price - level);
+        if (dist < halfSpacing && dist < bestDist) {
+          bestDist = dist;
+          bestLevel = level;
+        }
       }
+
+      if (bestLevel === null) return; // precio no está en ninguna zona libre
+
+      const level = bestLevel;
+      // BUY si el nivel está en o debajo del precio; SELL si está por encima
+      const direction: 'BUY' | 'SELL' = price >= level ? 'BUY' : 'SELL';
+
+      const tp = direction === 'BUY'
+        ? level + GridBotStrategy.SPACING
+        : level - GridBotStrategy.SPACING;
+      const sl = direction === 'BUY'
+        ? level - GridBotStrategy.SPACING * 2
+        : level + GridBotStrategy.SPACING * 2;
+
+      // Guard: tp/sl dentro de límites del grid
+      if (tp > GridBotStrategy.UPPER || tp < GridBotStrategy.LOWER) return;
+      if (sl < GridBotStrategy.LOWER * 0.95 || sl > GridBotStrategy.UPPER * 1.05) return;
+
+      const levelIdx = GridBotStrategy.LEVELS.indexOf(level);
+      const signal: Signal = {
+        symbol: GridBotStrategy.SYMBOL,
+        timeframe: '1h',
+        direction,
+        strategy: 'GridBot',
+        entryPrice: price,
+        stopLoss: sl,
+        targetPrice: tp,
+        confidence: 0.85,
+        reason: `GridBot nivel ${levelIdx + 1}/13 @ $${level} | Rango $${GridBotStrategy.LOWER}–$${GridBotStrategy.UPPER} | Spacing $${GridBotStrategy.SPACING}`,
+        meta: { gridLevel: level, levelIndex: levelIdx, gridLower: GridBotStrategy.LOWER, gridUpper: GridBotStrategy.UPPER },
+      };
+
+      logger.info(`[GridBot] ${direction} nivel ${levelIdx + 1}/13 @ $${level} (precio $${price.toFixed(2)}) tp=$${tp} sl=$${sl}`);
+      await this.handleSignal(signal);
     } catch (err) {
       logger.warn('[GridBot] tickGridBot error: ' + (err as Error).message);
     }

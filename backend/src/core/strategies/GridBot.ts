@@ -21,8 +21,9 @@ export class GridBotStrategy implements Strategy {
   static readonly NUM_GRIDS = 12;
   static readonly SPACING   = (2400 - 1800) / 12; // 50
   static readonly LEVELS    = Array.from({ length: 13 }, (_, i) => 1800 + i * 50);
-  // Tolerance: price must be within 0.4% of a level to trigger
-  static readonly TOLERANCE = 0.004;
+  // Zona activa: precio debe estar dentro de SPACING/2 ($25) del nivel
+  // Con spacing $50: cada nivel "posee" ±$25 a su alrededor
+  static readonly HALF_SPACING = (2400 - 1800) / 12 / 2; // 25
 
   evaluate(_symbol: string, _timeframe: string, _candles: Candle[]): Signal | null {
     // GridBot is handled by a dedicated tick in StrategyEngine — this evaluate() is never called
